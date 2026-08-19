@@ -26,6 +26,7 @@ export interface FunctionDeclaration {
   name: string;
   params: Parameter[];
   body: BlockStatement;
+  isVararg?: boolean;
 }
 
 export interface ClassDeclaration {

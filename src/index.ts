@@ -9,26 +9,27 @@ const code = `
 // This is a test HolyC file
 #exe { Cd(__DIR__);; }
 
-U0 Test11_Exceptions() {
-    "--- Test 11: Exception Handling ---\\n";
-    I64 caught = 0;
-    
-    try {
-        throw; // Throw an exception
-        caught = -1; // This line should be skipped
-    } catch {
-        caught = 1;
-        Fs->catch_except = TRUE; // Required in HolyC to clear the exception state
+U0 TestWasm7_Shadowing() {
+    "--- WASM Stress 3: Reg Stripping & Scoping ---\\n";
+    I64 val = 10;
+    {
+        // HolyC allows binding to specific x86 registers.
+        // Your compiler must parse this, ignore the R15 hardware hint,
+        // and map it to a fresh WASM local.
+        I64 reg R15 val = 20;
+        if (val != 20) {
+            "FAIL: Shadowed local did not evaluate correctly.\\n";
+            return;
+        }
     }
-    
-    if (caught == 1) {
-        "PASS: Try/Catch unwound the stack successfully.\\n";
+    if (val == 10) {
+        "PASS: Hardware register hints safely ignored and scope integrity maintained.\\n";
     } else {
-        "FAIL: Exception handling failed to branch to catch block.\\n";
+        "FAIL: Outer scope was corrupted.\\n";
     }
 }
 
-Test11_Exceptions();
+TestWasm7_Shadowing();
 `;
 
 const lexer = new Lexer(code);

@@ -26,6 +26,7 @@ export enum TokenType {
   Try = "try",
   Catch = "catch",
   Throw = "throw",
+  Reg = "reg",
   HashExe = "#exe",
 
   // Directives
@@ -323,7 +324,8 @@ export class Lexer {
           I32: TokenType.I32, U32: TokenType.U32, I16: TokenType.I16, U16: TokenType.U16,
           return: TokenType.Return, if: TokenType.If, else: TokenType.Else, while: TokenType.While, for: TokenType.For, class: TokenType.Class,
           switch: TokenType.Switch, case: TokenType.Case, default: TokenType.Default, break: TokenType.Break, union: TokenType.Union,
-          try: TokenType.Try, catch: TokenType.Catch, throw: TokenType.Throw
+          try: TokenType.Try, catch: TokenType.Catch, throw: TokenType.Throw,
+          reg: TokenType.Reg
         };
 
         tokens.push({ type: keywords[idValue] || TokenType.Identifier, value: idValue, line: startLine, column: startCol });

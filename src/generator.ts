@@ -4,7 +4,7 @@ import * as AST from "./ast.js";
 
 export class Generator {
   public module: binaryen.Module;
-  private currentLocals = new Map<string, { index: number, type: binaryen.Type, className?: string, isMemLocal?: boolean, pointerDepth?: number, holycType?: string }>();
+
   private globalTypes = new Map<string, { type: binaryen.Type, className?: string, pointerDepth?: number, holycType?: string }>();
   private classLayouts = new Map<string, { size: number, members: Map<string, { offset: number, type: binaryen.Type, pointerDepth?: number, holycType?: string }> }>();
   private functions = new Map<string, AST.FunctionDeclaration>();
@@ -13,6 +13,18 @@ export class Generator {
   private staticDataPtr = 0x10000;
   private currentBreakTarget: string | null = null;
   private currentCatchTarget: string | null = null;
+  
+  private scopes: Map<string, { index: number, type: binaryen.Type, className?: string, isMemLocal: boolean, pointerDepth: number, holycType?: string, arraySize?: any }>[] = [];
+  private currentLocalTypes: binaryen.Type[] = [];
+  private currentLocalBaseIndex = 0;
+  private currentLocalsWithAddressTaken = new Set<string>();
+
+  private getLocal(name: string) {
+      for (let i = this.scopes.length - 1; i >= 0; i--) {
+          if (this.scopes[i].has(name)) return this.scopes[i].get(name);
+      }
+      return undefined;
+  }
   
   constructor() {
     this.module = new binaryen.Module();
@@ -150,6 +162,7 @@ export class Generator {
       this.functions.set("_start", startFunc);
     }
     
+    this.module.addGlobal("__vararg_ptr", binaryen.i32, true, this.module.i32.const(0x30000));
     for (const func of functions) {
        this.generateFunction(func);
     }
@@ -172,9 +185,11 @@ export class Generator {
 
   private generateFunction(node: AST.FunctionDeclaration) {
     const returnType = this.mapType(node.returnType);
-    this.currentLocals.clear();
+    this.scopes = [new Map()];
+    this.currentLocalTypes = [];
+    this.currentLocalsWithAddressTaken.clear();
     
-    const localsWithAddressTaken = new Set<string>();
+    const localsWithAddressTaken = this.currentLocalsWithAddressTaken;
     const scanExpression = (expr: AST.Expression) => {
       if (expr.type === "UnaryExpression" && expr.operator === "&" && expr.argument.type === "Identifier") localsWithAddressTaken.add(expr.argument.name);
       if (expr.type === "BinaryExpression") { scanExpression(expr.left); scanExpression(expr.right); }
@@ -195,112 +210,78 @@ export class Generator {
     node.body.body.forEach(scanStatement);
 
     const paramTypes = node.params.map(p => this.mapType(p.varType, p.pointerDepth));
+    if (node.isVararg) {
+        paramTypes.push(binaryen.i64); // argc
+        paramTypes.push(binaryen.i64); // argv
+    }
+    const wasmParamTypes = binaryen.createType(paramTypes);
+    
     node.params.forEach((p, i) => {
       const className = this.classLayouts.has(p.varType) ? p.varType : undefined;
       const isMemLocal = localsWithAddressTaken.has(p.name);
-      this.currentLocals.set(p.name, { index: i, type: paramTypes[i]!, className, isMemLocal, pointerDepth: p.pointerDepth, holycType: p.varType });
+      this.scopes[0].set(p.name, { index: i, type: paramTypes[i]!, className, isMemLocal, pointerDepth: p.pointerDepth, holycType: p.varType });
     });
 
-    const localTypes: binaryen.Type[] = [];
-    const localInitStmts: AST.Statement[] = [];
-    
-    const extractLocals = (stmt: AST.Statement) => {
-      if (stmt.type === "VariableDeclaration") {
-        const type = this.mapType(stmt.varType, stmt.pointerDepth);
-        const className = this.classLayouts.has(stmt.varType) ? stmt.varType : undefined;
-        const isMemLocal = localsWithAddressTaken.has(stmt.name) || !!stmt.arraySize;
-        this.currentLocals.set(stmt.name, { index: node.params.length + localTypes.length, type, className, isMemLocal, pointerDepth: stmt.pointerDepth, holycType: stmt.varType, arraySize: stmt.arraySize });
-        localTypes.push(type);
-        if (className && stmt.pointerDepth === 0) localInitStmts.push(stmt);
-        else if (isMemLocal) localInitStmts.push(stmt);
-        else if (stmt.initializer) localInitStmts.push(stmt);
-      } else if (stmt.type === "BlockStatement") {
-        stmt.body.forEach(extractLocals);
-      } else if (stmt.type === "IfStatement") {
-        extractLocals(stmt.consequent);
-        if (stmt.alternate) extractLocals(stmt.alternate);
-      } else if (stmt.type === "WhileStatement") {
-        extractLocals(stmt.body);
-      } else if (stmt.type === "ForStatement") {
-        if (stmt.init) extractLocals(stmt.init);
-        extractLocals(stmt.body);
-      } else if (stmt.type === "SwitchStatement") {
-        stmt.cases.forEach(c => c.consequent.forEach(extractLocals));
-      }
-    };
-    node.body.body.forEach(extractLocals);
-
-    const blockStmts: binaryen.ExpressionRef[] = [];
-    for (const stmt of localInitStmts) {
-      if (stmt.type === "VariableDeclaration") {
-        const { index, isMemLocal, className } = this.currentLocals.get(stmt.name)!;
-        let initExpr = 0;
-        
-        let allocSize = 0;
-        if (stmt.arraySize && stmt.arraySize.type === "NumberLiteral") {
-            const numElements = stmt.arraySize.value;
-            let bytes = 8;
-            if (stmt.pointerDepth === 1 && (stmt.varType === "I8" || stmt.varType === "U8")) bytes = 1;
-            else if (stmt.pointerDepth === 1 && (stmt.varType === "I16" || stmt.varType === "U16")) bytes = 2;
-            else if (stmt.pointerDepth === 1 && (stmt.varType === "I32" || stmt.varType === "U32")) bytes = 4;
-            allocSize = numElements * bytes;
-        } else if (className && stmt.pointerDepth === 0) {
-            allocSize = this.classLayouts.get(className)!.size;
-        } else if (isMemLocal) {
-            allocSize = 8;
-        }
-
-        if (allocSize > 0) {
-          const ptrExpr = this.module.global.get("heap_ptr", binaryen.i32);
-          const newHeapPtr = this.module.i32.add(ptrExpr, this.module.i32.const(allocSize));
-          initExpr = this.module.block(null, [ this.module.global.set("heap_ptr", newHeapPtr), this.module.i64.extend_u(ptrExpr) ], binaryen.i64);
-        }
-
-        if (initExpr) blockStmts.push(this.module.local.set(index, initExpr));
-      }
+    this.currentLocalBaseIndex = node.params.length;
+    if (node.isVararg) {
+        this.scopes[0].set("argc", { index: this.currentLocalBaseIndex++, type: binaryen.i64, pointerDepth: 0, holycType: "I64", isMemLocal: false });
+        this.scopes[0].set("argv", { index: this.currentLocalBaseIndex++, type: binaryen.i64, pointerDepth: 1, holycType: "I64", isMemLocal: false });
     }
     
-    const bodyExprs = node.body.body.map(stmt => this.generateStatement(stmt));
-    if (returnType === binaryen.none) bodyExprs.push(this.module.return());
-    blockStmts.push(...bodyExprs);
-
-    this.module.addFunction(node.name, binaryen.createType(paramTypes), returnType, localTypes, this.module.block(null, blockStmts));
+    const bodyExpr = this.generateStatement(node.body);
+    this.module.addFunction(node.name, wasmParamTypes, returnType, this.currentLocalTypes, bodyExpr);
     this.module.addFunctionExport(node.name, node.name);
   }
 
   private generateStatement(stmt: AST.Statement): binaryen.ExpressionRef {
     switch (stmt.type) {
       case "VariableDeclaration": {
-        if (stmt.initializer) {
-          const { index, type, isMemLocal, className } = this.currentLocals.get(stmt.name)!;
+          const type = this.mapType(stmt.varType, stmt.pointerDepth);
+          const className = this.classLayouts.has(stmt.varType) ? stmt.varType : undefined;
+          const isMemLocal = this.currentLocalsWithAddressTaken.has(stmt.name) || !!stmt.arraySize;
           
-          if (stmt.initializer.type === "ArrayLiteral") {
-            const ptr32 = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
-            const stores = stmt.initializer.elements.map((el, i) => {
-                const val = this.generateExpression(el);
-                let bytes = 8;
-                if (stmt.pointerDepth === 1 && (stmt.varType === "I8" || stmt.varType === "U8")) bytes = 1;
-                else if (stmt.pointerDepth === 1 && (stmt.varType === "I16" || stmt.varType === "U16")) bytes = 2;
-                else if (stmt.pointerDepth === 1 && (stmt.varType === "I32" || stmt.varType === "U32")) bytes = 4;
-                
-                const offset = i * bytes;
-                if (bytes === 1) return this.module.i32.store8(offset, 1, ptr32, this.module.i32.wrap(val));
-                if (bytes === 2) return this.module.i32.store16(offset, 2, ptr32, this.module.i32.wrap(val));
-                if (bytes === 4) return this.module.i32.store(offset, 4, ptr32, this.module.i32.wrap(val));
-                return this.module.i64.store(offset, 8, ptr32, val);
-            });
-            return this.module.block(null, stores, binaryen.none);
+          const index = this.currentLocalBaseIndex + this.currentLocalTypes.length;
+          this.currentLocalTypes.push(type);
+          
+          this.scopes[this.scopes.length - 1].set(stmt.name, { index, type, className, isMemLocal, pointerDepth: stmt.pointerDepth, holycType: stmt.varType, arraySize: stmt.arraySize });
+          
+          let initExpr = 0;
+          if (className && stmt.pointerDepth === 0) {
+              const layout = this.classLayouts.get(className)!;
+              const size = layout.size;
+              initExpr = this.module.local.set(index, this.module.i64.const(BigInt(this.staticDataPtr)));
+              this.staticDataPtr += size;
+          } else if (isMemLocal) {
+              let size = 8;
+              if (stmt.arraySize && stmt.arraySize.type === "NumberLiteral") {
+                 const elements = Number(stmt.arraySize.value);
+                 size = (stmt.pointerDepth <= 1 && (stmt.varType === "U8" || stmt.varType === "I8")) ? elements : elements * 8;
+              }
+              initExpr = this.module.local.set(index, this.module.i64.const(BigInt(this.staticDataPtr)));
+              this.staticDataPtr += size;
           }
           
-          const initExpr = this.generateExpression(stmt.initializer, type);
-          if (isMemLocal && !className && !stmt.arraySize) {
-               const ptr32 = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
-               const storeVal = type === binaryen.f64 ? this.module.i64.reinterpret(initExpr) : initExpr;
-               return this.module.i64.store(0, 8, ptr32, storeVal);
+          if (stmt.initializer) {
+              if (stmt.initializer.type === "ArrayLiteral") {
+                  const ptr32 = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
+                  const stores = stmt.initializer.elements.map((el, i) => {
+                      const val = this.generateExpression(el);
+                      return this.module.i64.store(0, 8, this.module.i32.add(ptr32, this.module.i32.const(i * 8)), val);
+                  });
+                  return this.module.block(null, [initExpr ? initExpr : this.module.nop(), ...stores]);
+              }
+              const val = this.generateExpression(stmt.initializer);
+              if (initExpr) {
+                 const ptr = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
+                 return this.module.block(null, [
+                    initExpr,
+                    this.module.i64.store(0, 8, ptr, val)
+                 ]);
+              } else {
+                 return this.module.local.set(index, val);
+              }
           }
-          return this.module.local.set(index, initExpr);
-        }
-        return this.module.nop();
+          return initExpr ? initExpr : this.module.nop();
       }
       case "ReturnStatement": {
         if (stmt.argument) {
@@ -408,7 +389,9 @@ export class Generator {
         return this.module.if(condition, consequent, alternate);
       }
       case "BlockStatement": {
+        this.scopes.push(new Map());
         const exprs = stmt.body.map(s => this.generateStatement(s));
+        this.scopes.pop();
         return this.module.block(null, exprs);
       }
       case "ForStatement": {
@@ -458,8 +441,9 @@ export class Generator {
         return this.module.i64.const(BigInt(ptr));
       }
       case "Identifier": {
-        if (this.currentLocals.has(expr.name)) {
-          const { index, type, isMemLocal, className, arraySize } = this.currentLocals.get(expr.name)!;
+        const localDecl = this.getLocal(expr.name);
+        if (localDecl) {
+          const { index, type, isMemLocal, className, arraySize } = localDecl;
           
           if (arraySize) {
              return this.module.local.get(index, binaryen.i64); // Arrays decay to pointers
@@ -488,14 +472,17 @@ export class Generator {
         // Pointer arithmetic scaling
         if (!isF64 && (expr.operator === "+" || expr.operator === "-")) {
            const checkPtr = (e: AST.Expression) => {
-               if (e.type === "Identifier" && this.currentLocals.has(e.name)) {
-                   const depth = this.currentLocals.get(e.name)!.pointerDepth || 0;
-                   const type = this.currentLocals.get(e.name)!.holycType || "";
-                   if (depth > 0) {
-                      if (depth === 1 && (type === "I8" || type === "U8")) return 1;
-                      if (depth === 1 && (type === "I16" || type === "U16")) return 2;
-                      if (depth === 1 && (type === "I32" || type === "U32")) return 4;
-                      return 8;
+               if (e.type === "Identifier") {
+                   const localDecl = this.getLocal(e.name);
+                   if (localDecl) {
+                       const depth = localDecl.pointerDepth || 0;
+                       const type = localDecl.holycType || "";
+                       if (depth > 0) {
+                          if (depth === 1 && (type === "I8" || type === "U8")) return 1;
+                          if (depth === 1 && (type === "I16" || type === "U16")) return 2;
+                          if (depth === 1 && (type === "I32" || type === "U32")) return 4;
+                          return 8;
+                       }
                    }
                }
                return 0;
@@ -579,8 +566,9 @@ export class Generator {
         }
         if (expr.operator === "&") {
           if (expr.argument.type === "Identifier") {
-             if (this.currentLocals.has(expr.argument.name)) {
-                const { index, isMemLocal, className } = this.currentLocals.get(expr.argument.name)!;
+             const localDecl = this.getLocal(expr.argument.name);
+             if (localDecl) {
+                const { index, isMemLocal, className } = localDecl;
                 if (isMemLocal || className) return this.module.local.get(index, binaryen.i64);
              }
              if (this.functions.has(expr.argument.name)) {
@@ -600,7 +588,8 @@ export class Generator {
         const objectExpr = this.generateExpression(expr.object, binaryen.i64);
         let className = "";
         if (expr.object.type === "Identifier") {
-           if (this.currentLocals.has(expr.object.name)) className = this.currentLocals.get(expr.object.name)!.holycType || "";
+           const localDecl = this.getLocal(expr.object.name);
+           if (localDecl) className = localDecl.holycType || "";
            else if (this.globalTypes.has(expr.object.name)) className = this.globalTypes.get(expr.object.name)!.holycType || "";
         }
         if (!className || !this.classLayouts.has(className)) throw new Error("Unknown class type for member access");
@@ -615,6 +604,12 @@ export class Generator {
             return this.module.i64.extend_u(offsetPtr);
         }
         
+        if (member.type === binaryen.f64) return this.module.f64.load(0, 8, offsetPtr);
+        if (member.pointerDepth === 0) {
+            if (member.holycType === "U8" || member.holycType === "I8") return this.module.i64.extend_u(this.module.i32.load8_u(0, 1, offsetPtr));
+            if (member.holycType === "U16" || member.holycType === "I16") return this.module.i64.extend_u(this.module.i32.load16_u(0, 2, offsetPtr));
+            if (member.holycType === "U32" || member.holycType === "I32") return this.module.i64.extend_u(this.module.i32.load(0, 4, offsetPtr));
+        }
         return this.module.i64.load(0, 8, offsetPtr);
       }
       case "IndexExpression": {
@@ -625,7 +620,8 @@ export class Generator {
         let pointerDepth = 1;
         const findType = (e: AST.Expression): { t: string, depth: number } => {
             if (e.type === "Identifier") {
-                if (this.currentLocals.has(e.name)) return { t: this.currentLocals.get(e.name)!.holycType || "", depth: this.currentLocals.get(e.name)!.pointerDepth || 0 };
+                const localDecl = this.getLocal(e.name);
+                if (localDecl) return { t: localDecl.holycType || "", depth: localDecl.pointerDepth || 0 };
                 if (this.globalTypes.has(e.name)) return { t: this.globalTypes.get(e.name)!.holycType || "", depth: this.globalTypes.get(e.name)!.pointerDepth || 0 };
             }
             if (e.type === "MemberExpression") {
@@ -662,8 +658,9 @@ export class Generator {
       case "AssignmentExpression": {
         const right = this.generateExpression(expr.right);
         if (expr.left.type === "Identifier") {
-          if (this.currentLocals.has(expr.left.name)) {
-            const { index, type, isMemLocal, className } = this.currentLocals.get(expr.left.name)!;
+          const localDecl = this.getLocal(expr.left.name);
+          if (localDecl) {
+            const { index, type, isMemLocal, className } = localDecl;
             if (isMemLocal && !className) {
                const ptr32 = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
                const storeVal = type === binaryen.f64 ? this.module.i64.reinterpret(right) : right;
@@ -687,14 +684,23 @@ export class Generator {
           }
           let className = "";
           if (expr.left.object.type === "Identifier") {
-             if (this.currentLocals.has(expr.left.object.name)) className = this.currentLocals.get(expr.left.object.name)!.holycType || "";
+             const localDecl = this.getLocal(expr.left.object.name);
+             if (localDecl) className = localDecl.holycType || "";
              else if (this.globalTypes.has(expr.left.object.name)) className = this.globalTypes.get(expr.left.object.name)!.holycType || "";
           }
           const layout = this.classLayouts.get(className)!;
           const member = layout.members.get(expr.left.property)!;
           const ptr32 = this.module.i32.wrap(this.generateExpression(expr.left.object));
           const offsetPtr = this.module.i32.add(ptr32, this.module.i32.const(member.offset));
-          return this.module.block(null, [ this.module.i64.store(0, 8, offsetPtr, right), right ], binaryen.i64);
+          const rightType = binaryen.getExpressionType(right);
+          let storeOp = this.module.i64.store(0, 8, offsetPtr, right);
+          if (rightType === binaryen.f64) storeOp = this.module.f64.store(0, 8, offsetPtr, right);
+          else if (member.pointerDepth === 0) {
+              if (member.holycType === "U8" || member.holycType === "I8") storeOp = this.module.i32.store8(0, 1, offsetPtr, this.module.i32.wrap(right));
+              else if (member.holycType === "U16" || member.holycType === "I16") storeOp = this.module.i32.store16(0, 2, offsetPtr, this.module.i32.wrap(right));
+              else if (member.holycType === "U32" || member.holycType === "I32") storeOp = this.module.i32.store(0, 4, offsetPtr, this.module.i32.wrap(right));
+          }
+          return this.module.block(null, [ storeOp, right ], rightType);
         }
         throw new Error(`Complex assignment not fully implemented yet`);
       }
@@ -716,7 +722,7 @@ export class Generator {
           return this.module.call(callee, args, binaryen.none);
         }
         
-        if (this.currentLocals.has(callee) || this.globalTypes.has(callee)) {
+        if (this.getLocal(callee) || this.globalTypes.has(callee)) {
             const targetExpr = this.generateExpression({ type: "Identifier", name: callee });
             const target32 = this.module.i32.wrap(targetExpr);
             const paramTypes = args.map(a => binaryen.getExpressionType(a));
@@ -737,6 +743,7 @@ export class Generator {
             }
             // ensure all args are correctly typed, casting to i64 if f64 but expecting i64
             args = args.map((arg, i) => {
+               if (i >= funcDecl.params.length) return arg;
                const param = funcDecl.params[i]!;
                const expected = this.mapType(param.varType, param.pointerDepth);
                const actual = binaryen.getExpressionType(arg);
@@ -745,6 +752,49 @@ export class Generator {
                return arg;
             });
             const retType = this.mapType(funcDecl.returnType);
+            
+            if (funcDecl.isVararg) {
+                const numFixed = funcDecl.params.length;
+                const fixedArgs = args.slice(0, numFixed);
+                const varargExprs = args.slice(numFixed);
+                
+                const argc = varargExprs.length;
+                const size = argc * 8;
+                
+                if (argc === 0) {
+                    fixedArgs.push(this.module.i64.const(0n));
+                    fixedArgs.push(this.module.i64.const(0n));
+                    return this.module.call(callee, fixedArgs, retType);
+                }
+
+                const setupStmts: binaryen.ExpressionRef[] = [];
+                for (let i = 0; i < varargExprs.length; i++) {
+                    const argVal = varargExprs[i];
+                    const val = binaryen.getExpressionType(argVal) === binaryen.f64 ? this.module.i64.reinterpret(argVal) : argVal;
+                    const ptr = this.module.i32.add(
+                        this.module.global.get("__vararg_ptr", binaryen.i32),
+                        this.module.i32.const(i * 8)
+                    );
+                    setupStmts.push(this.module.i64.store(0, 8, ptr, val));
+                }
+                
+                setupStmts.push(
+                    this.module.global.set("__vararg_ptr", 
+                        this.module.i32.add(this.module.global.get("__vararg_ptr", binaryen.i32), this.module.i32.const(size))
+                    )
+                );
+                
+                const oldPtrExpr = this.module.i32.sub(this.module.global.get("__vararg_ptr", binaryen.i32), this.module.i32.const(size));
+                const argvExpr = this.module.i64.extend_u(oldPtrExpr);
+                
+                fixedArgs.push(this.module.i64.const(BigInt(argc)));
+                fixedArgs.push(argvExpr);
+                
+                const callExpr = this.module.call(callee, fixedArgs, retType);
+                setupStmts.push(callExpr);
+                return this.module.block(null, setupStmts, retType);
+            }
+            
             return this.module.call(callee, args, retType);
         }
         

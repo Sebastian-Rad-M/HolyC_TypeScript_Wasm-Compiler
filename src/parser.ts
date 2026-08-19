@@ -138,6 +138,10 @@ export class Parser {
       
       let firstPointerDepth = 0;
       while (this.match(TokenType.Star)) firstPointerDepth++;
+
+      if (this.match(TokenType.Reg)) {
+          if (this.check(TokenType.Identifier)) this.advance();
+      }
       
       let isFuncPtr = false;
       let firstName = "";
@@ -165,20 +169,30 @@ export class Parser {
          funcPointerDepth++;
       }
       
-      if (!isFuncPtr && this.match(TokenType.OpenParen)) {
-        // Function Declaration
+      if (!isFuncPtr && this.check(TokenType.OpenParen)) {
+        this.consume(TokenType.OpenParen, "Expected '(' after function name.");
         const params: AST.Parameter[] = [];
+        let isVararg = false;
         if (!this.check(TokenType.CloseParen)) {
           do {
+            if (this.match(TokenType.Ellipsis)) {
+                isVararg = true;
+                break;
+            }
             if (this.isType(this.peek())) {
               const pType = this.parseType();
               let pPointerDepth = 0;
               while (this.match(TokenType.Star)) pPointerDepth++;
-              
-              const pName = this.consume(TokenType.Identifier, "Expected parameter name.").value;
-              while (this.match(TokenType.OpenBracket)) {
-                 this.consume(TokenType.CloseBracket, "Expected ']'");
-                 pPointerDepth++;
+              let pName = "";
+              if (this.match(TokenType.OpenParen)) {
+                 while (this.match(TokenType.Star)) pPointerDepth++;
+                 pName = this.consume(TokenType.Identifier, "Expected identifier in function pointer.").value;
+                 this.consume(TokenType.CloseParen, "Expected ')' in function pointer.");
+                 this.consume(TokenType.OpenParen, "Expected '(' in function pointer.");
+                 while (!this.check(TokenType.CloseParen) && !this.isAtEnd()) this.advance();
+                 this.consume(TokenType.CloseParen, "Expected ')' in function pointer.");
+              } else {
+                 pName = this.consume(TokenType.Identifier, "Expected parameter name.").value;
               }
               
               let defaultValue: AST.Expression | null = null;
@@ -198,7 +212,8 @@ export class Parser {
           returnType: typeStr,
           name: firstName,
           params,
-          body
+          body,
+          isVararg
         };
       }
       
@@ -223,6 +238,11 @@ export class Parser {
         if (this.match(TokenType.Comma)) {
            currentPointerDepth = 0;
            while (this.match(TokenType.Star)) currentPointerDepth++;
+           
+           if (this.match(TokenType.Reg)) {
+               if (this.check(TokenType.Identifier)) this.advance();
+           }
+           
            currentName = this.consume(TokenType.Identifier, "Expected identifier after comma.").value;
            arraySize = undefined;
            while (this.match(TokenType.OpenBracket)) {
