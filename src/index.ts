@@ -9,30 +9,26 @@ const code = `
 // This is a test HolyC file
 #exe { Cd(__DIR__);; }
 
-U0 Test9_SwitchRanges() {
-    "--- Test 9: Switch Statements & Ranges ---\\n";
-    I64 val = 7;
-    I64 result = 0;
+U0 Test11_Exceptions() {
+    "--- Test 11: Exception Handling ---\\n";
+    I64 caught = 0;
     
-    switch (val) {
-        case 1...5:
-            result = 1;
-            break;
-        case 6...10:
-            result = 2;
-            break;
-        default:
-            result = -1;
+    try {
+        throw; // Throw an exception
+        caught = -1; // This line should be skipped
+    } catch {
+        caught = 1;
+        Fs->catch_except = TRUE; // Required in HolyC to clear the exception state
     }
     
-    if (result == 2) {
-        "PASS: Switch statements and range parsing working.\\n";
+    if (caught == 1) {
+        "PASS: Try/Catch unwound the stack successfully.\\n";
     } else {
-        "FAIL: Switch statement branching or bounds checking broken.\\n";
+        "FAIL: Exception handling failed to branch to catch block.\\n";
     }
 }
 
-Test9_SwitchRanges();
+Test11_Exceptions();
 `;
 
 const lexer = new Lexer(code);

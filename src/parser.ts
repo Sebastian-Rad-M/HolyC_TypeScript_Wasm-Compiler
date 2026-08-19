@@ -105,26 +105,32 @@ export class Parser {
       return { type: "BlockStatement", body: [] };
     }
 
-    if (this.match(TokenType.Class)) {
-      const name = this.consume(TokenType.Identifier, "Expected class name.").value;
+    if (this.match(TokenType.Class) || this.match(TokenType.Union)) {
+      const isUnion = this.previous().type === TokenType.Union;
+      const name = this.consume(TokenType.Identifier, "Expected class/union name.").value;
       this.definedTypes.add(name);
-      this.consume(TokenType.OpenBrace, "Expected '{' before class body.");
+      this.consume(TokenType.OpenBrace, "Expected '{' before body.");
       const members: AST.VariableDeclaration[] = [];
       while (!this.check(TokenType.CloseBrace) && !this.isAtEnd()) {
         const typeStr = this.parseType();
         let memPointerDepth = 0;
         while (this.match(TokenType.Star)) memPointerDepth++;
         const memName = this.consume(TokenType.Identifier, "Expected member name.").value;
+        
+        let arraySize: AST.Expression | undefined = undefined;
         while (this.match(TokenType.OpenBracket)) {
+           if (!this.check(TokenType.CloseBracket)) {
+               arraySize = this.expression();
+           }
            this.consume(TokenType.CloseBracket, "Expected ']'");
            memPointerDepth++;
         }
         this.consume(TokenType.Semicolon, "Expected ';' after member.");
-        members.push({ type: "VariableDeclaration", varType: typeStr, name: memName, initializer: null, pointerDepth: memPointerDepth } as any);
+        members.push({ type: "VariableDeclaration", varType: typeStr, name: memName, initializer: null, pointerDepth: memPointerDepth, arraySize } as any);
       }
-      this.consume(TokenType.CloseBrace, "Expected '}' after class body.");
-      this.consume(TokenType.Semicolon, "Expected ';' after class declaration.");
-      return { type: "ClassDeclaration", name, members };
+      this.consume(TokenType.CloseBrace, "Expected '}' after body.");
+      this.consume(TokenType.Semicolon, "Expected ';' after declaration.");
+      return { type: "ClassDeclaration", name, members, isUnion };
     }
 
     if (this.isType(this.peek())) {
@@ -248,6 +254,8 @@ export class Parser {
        this.consume(TokenType.Semicolon, "Expected ';' after break.");
        return { type: "BreakStatement" };
     }
+    if (this.match(TokenType.Try)) return this.tryStatement();
+    if (this.match(TokenType.Throw)) return this.throwStatement();
     if (this.check(TokenType.OpenBrace)) return this.blockStatement();
 
     return this.expressionStatement();
@@ -355,6 +363,20 @@ export class Parser {
     return { type: "ReturnStatement", argument: value };
   }
 
+  private tryStatement(): AST.TryStatement {
+    const block = this.blockStatement();
+    this.consume(TokenType.Catch, "Expected 'catch' after 'try' block.");
+    const handler = this.blockStatement();
+    return { type: "TryStatement", block, handler };
+  }
+
+  private throwStatement(): AST.ThrowStatement {
+    this.consume(TokenType.Semicolon, "Expected ';' after 'throw'.");
+    return { type: "ThrowStatement" };
+  }
+
+
+
   private blockStatement(): AST.BlockStatement {
     this.consume(TokenType.OpenBrace, "Expected '{' before block.");
     const statements: AST.Statement[] = [];
@@ -456,7 +478,8 @@ export class Parser {
   private logicalAnd(): AST.Expression { return this.parseBinary(this.bitwiseOr, TokenType.LogicalAnd); }
   private bitwiseOr(): AST.Expression { return this.parseBinary(this.equality, TokenType.BitwiseOr); }
   private equality(): AST.Expression { return this.parseBinary(this.comparison, TokenType.DoubleEquals, TokenType.NotEquals); }
-  private comparison(): AST.Expression { return this.parseBinary(this.term, TokenType.LessThan, TokenType.LessEqual, TokenType.GreaterThan, TokenType.GreaterEqual); }
+  private comparison(): AST.Expression { return this.parseBinary(this.bitwiseShift, TokenType.LessThan, TokenType.LessEqual, TokenType.GreaterThan, TokenType.GreaterEqual); }
+  private bitwiseShift(): AST.Expression { return this.parseBinary(this.term, TokenType.LeftShift, TokenType.RightShift); }
   private term(): AST.Expression { return this.parseBinary(this.factor, TokenType.Minus, TokenType.Plus); }
   private factor(): AST.Expression { return this.parseBinary(this.unary, TokenType.Slash, TokenType.Star, TokenType.Modulo); }
 

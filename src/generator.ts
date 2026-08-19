@@ -12,6 +12,7 @@ export class Generator {
   private functionTableMap = new Map<string, number>();
   private staticDataPtr = 0x10000;
   private currentBreakTarget: string | null = null;
+  private currentCatchTarget: string | null = null;
   
   constructor() {
     this.module = new binaryen.Module();
@@ -111,13 +112,27 @@ export class Generator {
         this.module.addGlobal(stmt.name, type, true, initExpr);
       } else if (stmt.type === "ClassDeclaration") {
         let offset = 0;
-        const members = new Map<string, { offset: number, type: binaryen.Type, pointerDepth?: number, holycType?: string }>();
+        let maxSize = 0;
+        const members = new Map<string, { offset: number, type: binaryen.Type, pointerDepth?: number, holycType?: string, isArray?: boolean }>();
         for (const mem of stmt.members) {
            const type = this.mapType(mem.varType, mem.pointerDepth);
-           members.set(mem.name, { offset, type, pointerDepth: mem.pointerDepth, holycType: mem.varType });
-           offset += 8;
+           members.set(mem.name, { offset, type, pointerDepth: mem.pointerDepth, holycType: mem.varType, isArray: !!mem.arraySize });
+           
+           let memberSize = 8;
+           if (mem.pointerDepth === 0) {
+               if (mem.varType === "I8" || mem.varType === "U8") memberSize = 1;
+               else if (mem.varType === "I16" || mem.varType === "U16") memberSize = 2;
+               else if (mem.varType === "I32" || mem.varType === "U32") memberSize = 4;
+               else if (this.classLayouts.has(mem.varType)) memberSize = this.classLayouts.get(mem.varType)!.size;
+           }
+           if (mem.arraySize && mem.arraySize.type === "NumberLiteral") {
+               memberSize *= parseInt(mem.arraySize.value);
+           }
+           
+           maxSize = Math.max(maxSize, memberSize);
+           if (!stmt.isUnion) offset += memberSize;
         }
-        this.classLayouts.set(stmt.name, { size: offset, members });
+        this.classLayouts.set(stmt.name, { size: stmt.isUnion ? maxSize : offset, members });
       } else {
         globalStmts.push(stmt);
       }
@@ -351,6 +366,31 @@ export class Generator {
         this.currentBreakTarget = oldTarget;
         return currentBlockExpr;
       }
+      case "TryStatement": {
+        const tryName = `try_${Math.random().toString(36).substring(7)}`;
+        const catchName = `catch_${Math.random().toString(36).substring(7)}`;
+        
+        const oldCatchTarget = this.currentCatchTarget;
+        this.currentCatchTarget = catchName;
+        
+        const tryStmts = stmt.block.body.map(s => this.generateStatement(s));
+        tryStmts.push(this.module.br(tryName));
+        
+        this.currentCatchTarget = oldCatchTarget;
+        
+        const catchStmts = stmt.handler.body.map(s => this.generateStatement(s));
+        
+        return this.module.block(tryName, [
+            this.module.block(catchName, tryStmts),
+            ...catchStmts
+        ]);
+      }
+      case "ThrowStatement": {
+        if (!this.currentCatchTarget) {
+            return this.module.unreachable();
+        }
+        return this.module.br(this.currentCatchTarget);
+      }
       case "ExpressionStatement": {
         const exprRef = this.generateExpression(stmt.expression);
         const type = binaryen.getExpressionInfo(exprRef).type;
@@ -471,6 +511,8 @@ export class Generator {
         }
         
         switch (expr.operator) {
+          case "<<": return this.module.i64.shl(left, right);
+          case ">>": return this.module.i64.shr_s(left, right);
           case "+": return isF64 ? this.module.f64.add(left, right) : this.module.i64.add(left, right);
           case "-": return isF64 ? this.module.f64.sub(left, right) : this.module.i64.sub(left, right);
           case "*": return isF64 ? this.module.f64.mul(left, right) : this.module.i64.mul(left, right);
@@ -568,6 +610,11 @@ export class Generator {
         
         const ptr32 = this.module.i32.wrap(objectExpr);
         const offsetPtr = this.module.i32.add(ptr32, this.module.i32.const(member.offset));
+        
+        if (member.isArray) {
+            return this.module.i64.extend_u(offsetPtr);
+        }
+        
         return this.module.i64.load(0, 8, offsetPtr);
       }
       case "IndexExpression": {
@@ -575,20 +622,30 @@ export class Generator {
         const indexExpr = this.generateExpression(expr.index, binaryen.i64);
         
         let holycType = "";
-        if (expr.object.type === "Identifier") {
-           if (this.currentLocals.has(expr.object.name)) holycType = this.currentLocals.get(expr.object.name)!.holycType || "";
-           else if (this.globalTypes.has(expr.object.name)) holycType = this.globalTypes.get(expr.object.name)!.holycType || "";
-        }
+        let pointerDepth = 1;
+        const findType = (e: AST.Expression): { t: string, depth: number } => {
+            if (e.type === "Identifier") {
+                if (this.currentLocals.has(e.name)) return { t: this.currentLocals.get(e.name)!.holycType || "", depth: this.currentLocals.get(e.name)!.pointerDepth || 0 };
+                if (this.globalTypes.has(e.name)) return { t: this.globalTypes.get(e.name)!.holycType || "", depth: this.globalTypes.get(e.name)!.pointerDepth || 0 };
+            }
+            if (e.type === "MemberExpression") {
+                const parent = findType(e.object);
+                if (parent.t && this.classLayouts.has(parent.t)) {
+                    const member = this.classLayouts.get(parent.t)!.members.get(e.property);
+                    if (member) return { t: member.holycType || "", depth: member.pointerDepth || 0 };
+                }
+            }
+            return { t: "", depth: 0 };
+        };
+        const resolved = findType(expr.object);
+        holycType = resolved.t;
+        pointerDepth = resolved.depth;
         
         const ptr32 = this.module.i32.wrap(objectExpr);
         const index32 = this.module.i32.wrap(indexExpr);
         
         let bytes = 8;
-        let pointerDepth = 0;
-        if (expr.object.type === "Identifier") {
-           if (this.currentLocals.has(expr.object.name)) pointerDepth = this.currentLocals.get(expr.object.name)!.pointerDepth || 0;
-           else if (this.globalTypes.has(expr.object.name)) pointerDepth = this.globalTypes.get(expr.object.name)!.pointerDepth || 0;
-        }
+
         
         if (pointerDepth <= 1 && (holycType === "U8" || holycType === "I8")) bytes = 1;
         else if (pointerDepth <= 1 && (holycType === "U16" || holycType === "I16")) bytes = 2;
@@ -625,6 +682,9 @@ export class Generator {
              this.module.i64.const(0n)
           ], binaryen.i64);
         } else if (expr.left.type === "MemberExpression") {
+          if (expr.left.object.type === "Identifier" && expr.left.object.name === "Fs") {
+              return right;
+          }
           let className = "";
           if (expr.left.object.type === "Identifier") {
              if (this.currentLocals.has(expr.left.object.name)) className = this.currentLocals.get(expr.left.object.name)!.holycType || "";

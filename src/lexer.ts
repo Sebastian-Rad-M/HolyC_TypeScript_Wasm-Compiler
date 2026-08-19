@@ -22,6 +22,10 @@ export enum TokenType {
   Case = "case",
   Default = "default",
   Break = "break",
+  Union = "union",
+  Try = "try",
+  Catch = "catch",
+  Throw = "throw",
   HashExe = "#exe",
 
   // Directives
@@ -58,6 +62,8 @@ export enum TokenType {
   GreaterThan = ">",
   LessEqual = "<=",
   GreaterEqual = ">=",
+  LeftShift = "<<",
+  RightShift = ">>",
   Ampersand = "&",
   LogicalAnd = "&&",
   BitwiseOr = "|",
@@ -187,8 +193,16 @@ export class Lexer {
 
       if (c === '=') { matchNext('=', TokenType.DoubleEquals, TokenType.Equals); continue; }
       if (c === '!') { matchNext('=', TokenType.NotEquals, TokenType.Bang); continue; }
-      if (c === '<') { matchNext('=', TokenType.LessEqual, TokenType.LessThan); continue; }
-      if (c === '>') { matchNext('=', TokenType.GreaterEqual, TokenType.GreaterThan); continue; }
+      if (c === '<') { 
+        if (this.peek() === '<') { this.advance(); tokens.push({ type: TokenType.LeftShift, value: "<<", line: startLine, column: startCol }); }
+        else { matchNext('=', TokenType.LessEqual, TokenType.LessThan); }
+        continue; 
+      }
+      if (c === '>') { 
+        if (this.peek() === '>') { this.advance(); tokens.push({ type: TokenType.RightShift, value: ">>", line: startLine, column: startCol }); }
+        else { matchNext('=', TokenType.GreaterEqual, TokenType.GreaterThan); }
+        continue; 
+      }
       if (c === '&') { matchNext('&', TokenType.LogicalAnd, TokenType.Ampersand); continue; }
       if (c === '+') { 
         if (this.peek() === '+') { this.advance(); tokens.push({ type: TokenType.PlusPlus, value: "++", line: startLine, column: startCol }); }
@@ -300,13 +314,16 @@ export class Lexer {
       if (this.isAlpha(c)) {
         let idValue = c;
         while (this.isAlphaNumeric(this.peek())) idValue += this.advance();
+        if (idValue === "TRUE") { tokens.push({ type: TokenType.Number, value: "1", line: startLine, column: startCol }); continue; }
+        if (idValue === "FALSE") { tokens.push({ type: TokenType.Number, value: "0", line: startLine, column: startCol }); continue; }
 
         const keywords: Record<string, TokenType> = {
           U0: TokenType.U0, U8: TokenType.U8, I8: TokenType.I8, 
           I64: TokenType.I64, U64: TokenType.U64, F64: TokenType.F64,
           I32: TokenType.I32, U32: TokenType.U32, I16: TokenType.I16, U16: TokenType.U16,
           return: TokenType.Return, if: TokenType.If, else: TokenType.Else, while: TokenType.While, for: TokenType.For, class: TokenType.Class,
-          switch: TokenType.Switch, case: TokenType.Case, default: TokenType.Default, break: TokenType.Break
+          switch: TokenType.Switch, case: TokenType.Case, default: TokenType.Default, break: TokenType.Break, union: TokenType.Union,
+          try: TokenType.Try, catch: TokenType.Catch, throw: TokenType.Throw
         };
 
         tokens.push({ type: keywords[idValue] || TokenType.Identifier, value: idValue, line: startLine, column: startCol });

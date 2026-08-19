@@ -16,6 +16,8 @@ export type Statement =
   | ForStatement
   | SwitchStatement
   | BreakStatement
+  | TryStatement
+  | ThrowStatement
   | BlockStatement;
 
 export interface FunctionDeclaration {
@@ -30,6 +32,7 @@ export interface ClassDeclaration {
   type: "ClassDeclaration";
   name: string;
   members: VariableDeclaration[];
+  isUnion?: boolean;
 }
 
 export interface Parameter {
@@ -99,6 +102,16 @@ export interface SwitchStatement {
   type: "SwitchStatement";
   discriminant: Expression;
   cases: SwitchCase[];
+}
+
+export interface TryStatement {
+  type: "TryStatement";
+  block: BlockStatement;
+  handler: BlockStatement;
+}
+
+export interface ThrowStatement {
+  type: "ThrowStatement";
 }
 
 export interface ArrayLiteral {
