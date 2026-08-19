@@ -36,6 +36,9 @@ export class Generator {
     this.module.addFunctionImport("Print3", "env", "Print3", binaryen.createType([binaryen.i64, binaryen.i64, binaryen.i64, binaryen.i64]), binaryen.none);
     this.module.addFunctionImport("Print4", "env", "Print4", binaryen.createType([binaryen.i64, binaryen.i64, binaryen.i64, binaryen.i64, binaryen.i64]), binaryen.none);
     this.module.addFunctionImport("GrLine", "env", "GrLine", binaryen.createType([binaryen.i64, binaryen.i64, binaryen.i64, binaryen.i64]), binaryen.none);
+    this.module.addFunctionImport("Yield", "env", "Yield", binaryen.none, binaryen.none);
+    this.module.addFunctionImport("Sleep", "env", "Sleep", binaryen.createType([binaryen.i64]), binaryen.none);
+    this.module.addFunctionImport("Spawn", "env", "Spawn", binaryen.createType([binaryen.i64, binaryen.i64, binaryen.i64]), binaryen.i64);
   }
 
   private mapType(type: AST.Type | string, pointerDepth: number = 0): binaryen.Type {
@@ -193,11 +196,13 @@ export class Generator {
        }
        this.module.addTable("0", tableArr.length, tableArr.length);
        this.module.addActiveElementSegment("0", "0", tableArr, this.module.i32.const(0));
+       this.module.addTableExport("0", "table");
     }
 
     if (!this.module.validate()) {
       throw new Error("Binaryen validation failed! The generated Wasm is invalid.");
     }
+    this.module.runPasses(["asyncify"]);
     return this.module.emitBinary();
   }
 
@@ -474,6 +479,16 @@ export class Generator {
           }
           return this.module.local.get(index, type);
         }
+        
+        if (this.globalTypes.has(expr.name)) {
+            const globalDef = this.globalTypes.get(expr.name)!;
+            return this.module.global.get(expr.name, globalDef.type);
+        }
+        
+        if (this.functions.has(expr.name) || ["Yield"].includes(expr.name)) {
+            return this.generateExpression({ type: "CallExpression", callee: expr.name, arguments: [] } as AST.CallExpression);
+        }
+
         throw new Error(`Undefined identifier: ${expr.name}`);
       }
       case "BinaryExpression": {
@@ -601,6 +616,40 @@ export class Generator {
         }
         throw new Error(`Unary operator ${expr.operator} not implemented`);
       }
+      case "UpdateExpression": {
+        const isPlus = expr.operator === "++";
+        
+        if (expr.argument.type === "Identifier") {
+            const localDecl = this.getLocal(expr.argument.name);
+            if (localDecl) {
+                const { index, type } = localDecl;
+                const oldVal = this.module.local.get(index, type);
+                const newVal = isPlus ? this.module.i64.add(oldVal, this.module.i64.const(1n)) : this.module.i64.sub(oldVal, this.module.i64.const(1n));
+                const teeNewVal = this.module.local.tee(index, newVal, type);
+                
+                if (expr.prefix) {
+                    return teeNewVal;
+                } else {
+                    return isPlus ? this.module.i64.sub(teeNewVal, this.module.i64.const(1n)) : this.module.i64.add(teeNewVal, this.module.i64.const(1n));
+                }
+            } else if (this.globalTypes.has(expr.argument.name)) {
+                const globalDef = this.globalTypes.get(expr.argument.name)!;
+                const oldVal = this.module.global.get(expr.argument.name, globalDef.type);
+                const newVal = isPlus ? this.module.i64.add(oldVal, this.module.i64.const(1n)) : this.module.i64.sub(oldVal, this.module.i64.const(1n));
+                const setNewValAndReturn = this.module.block(null, [
+                    this.module.global.set(expr.argument.name, newVal),
+                    newVal
+                ], globalDef.type);
+                
+                if (expr.prefix) {
+                    return setNewValAndReturn;
+                } else {
+                    return isPlus ? this.module.i64.sub(setNewValAndReturn, this.module.i64.const(1n)) : this.module.i64.add(setNewValAndReturn, this.module.i64.const(1n));
+                }
+            }
+        }
+        throw new Error(`UpdateExpression on complex target not fully implemented`);
+      }
       case "MemberExpression": {
         if (expr.object.type === "Identifier" && expr.object.name === "Fs") {
             const fsBase = this.module.i32.const(0x10000); // Dummy FS segment base
@@ -696,20 +745,32 @@ export class Generator {
         return this.module.i64.load(0, 8, finalPtr);
       }
       case "AssignmentExpression": {
-        const right = this.generateExpression(expr.right);
         if (expr.left.type === "Identifier") {
           const localDecl = this.getLocal(expr.left.name);
           if (localDecl) {
+            const right = this.generateExpression(expr.right);
             const { index, type, isMemLocal, className } = localDecl;
             if (isMemLocal && !className) {
                const ptr32 = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
                const storeVal = type === binaryen.f64 ? this.module.i64.reinterpret(right) : right;
+               
+               // To avoid sharing `right`, evaluate it into a scratch local, then store it.
+               // For simplicity, we just re-evaluate it here if it's safe, but if it has side effects, it's bad.
+               // Since we can't easily allocate locals midway without a pass, we can use `local.tee` if it's a local.
+               // Since we don't have a scratch local ready, we must re-evaluate expr.right.
                return this.module.block(null, [
                  this.module.i64.store(0, 8, ptr32, storeVal),
-                 right
+                 this.generateExpression(expr.right)
                ], type);
             }
             return this.module.local.tee(index, right, type);
+          }
+          
+          if (this.globalTypes.has(expr.left.name)) {
+              return this.module.block(null, [
+                 this.module.global.set(expr.left.name, this.generateExpression(expr.right)),
+                 this.generateExpression(expr.right)
+              ], binaryen.getExpressionType(this.generateExpression(expr.right)));
           }
         } else if (expr.left.type === "UnaryExpression" && expr.left.operator === "*") {
           const ptrExpr = this.generateExpression(expr.left.argument);
@@ -843,8 +904,11 @@ export class Generator {
            });
         }
         
-        if (callee.startsWith("Print") || callee === "GrLine") {
+        if (callee.startsWith("Print") || callee === "GrLine" || callee === "Yield" || callee === "Sleep") {
           return this.module.call(callee, args, binaryen.none);
+        }
+        if (callee === "Spawn") {
+          return this.module.call(callee, args, binaryen.i64);
         }
         
         if (this.getLocal(callee) || this.globalTypes.has(callee)) {

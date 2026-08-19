@@ -4,6 +4,7 @@ import { Lexer } from './lexer.js';
 import { Parser } from './parser.js';
 import { Generator } from './generator.js';
 import { Runtime } from './runtime.js';
+import { TaskManager } from './scheduler.js';
 
 const defaultCode = `U0 Main() {
   I64 x = 1 + 2 * 3;
@@ -54,7 +55,11 @@ document.getElementById('run-btn')!.addEventListener('click', async () => {
       canvasCtx: ctx
     });
     
+    // Create Task Manager and merge its imports
+    const taskManager = new TaskManager(runtime.memory);
+    
     const importObject = runtime.getImportObject();
+    importObject.env = { ...importObject.env, ...taskManager.getImports() };
     delete importObject.env?.memory; // we use exported memory instead
     
     const wasmModule = await WebAssembly.compile(wasmBinary as any);
@@ -62,17 +67,21 @@ document.getElementById('run-btn')!.addEventListener('click', async () => {
     
     // Link exported memory back to runtime
     runtime.memory.memory = instance.exports.memory as WebAssembly.Memory;
+    taskManager.setInstance(instance);
     
     if (typeof (instance.exports as any)._start === "function") {
-      (instance.exports as any)._start();
-    }
-    
-    if (typeof (instance.exports as any).Main === "function") {
-      (instance.exports as any).Main();
-    } else if (typeof (instance.exports as any)._start !== "function") {
-      log("Error: No Main() function found and no global statements to execute.");
+      taskManager.spawnMain(() => {
+          (instance.exports as any)._start();
+          if (typeof (instance.exports as any).Main === "function") {
+              (instance.exports as any).Main();
+          }
+      });
+    } else if (typeof (instance.exports as any).Main === "function") {
+      taskManager.spawnMain(() => {
+          (instance.exports as any).Main();
+      });
     } else {
-      log("Execution complete.");
+      log("Error: No Main() function found and no global statements to execute.");
     }
     
   } catch (err: any) {

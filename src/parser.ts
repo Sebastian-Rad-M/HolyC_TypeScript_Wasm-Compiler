@@ -73,7 +73,7 @@ export class Parser {
     return { type: "Program", body: statements };
   }
 
-  private definedTypes = new Set<string>();
+  private definedTypes = new Set<string>(["CTask"]);
 
   private isType(token: Token): boolean {
     if ([TokenType.U0, TokenType.I64, TokenType.U64, TokenType.F64, TokenType.I32, TokenType.U32, TokenType.I16, TokenType.U16, TokenType.I8, TokenType.U8].includes(token.type)) return true;
@@ -516,12 +516,11 @@ export class Parser {
       const right = this.unary();
       
       if (operator === "++" || operator === "--") {
-         const binOp = operator === "++" ? "+" : "-";
          return {
-           type: "AssignmentExpression",
-           left: right,
-           operator: "=",
-           right: { type: "BinaryExpression", operator: binOp, left: right, right: { type: "NumberLiteral", value: 1, rawValue: "1" } }
+           type: "UpdateExpression",
+           operator,
+           argument: right,
+           prefix: true
          };
       }
       
@@ -544,6 +543,9 @@ export class Parser {
         const index = this.expression();
         this.consume(TokenType.CloseBracket, "Expected ']' after index.");
         expr = { type: "IndexExpression", object: expr, index };
+      } else if (this.match(TokenType.PlusPlus, TokenType.MinusMinus)) {
+        const operator = this.previous().value as "++" | "--";
+        expr = { type: "UpdateExpression", operator, argument: expr, prefix: false };
       } else {
         break;
       }

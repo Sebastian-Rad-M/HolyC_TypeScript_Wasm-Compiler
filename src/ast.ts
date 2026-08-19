@@ -1,4 +1,4 @@
-export type Type = "U0" | "U8" | "I8" | "I64" | "U64" | "F64" | "I32" | "U32" | "I16" | "U16"; // HolyC Types
+export type Type = "U0" | "U8" | "I8" | "I64" | "U64" | "F64" | "I32" | "U32" | "I16" | "U16" | "CTask"; // HolyC Types
 
 export interface Program {
   type: "Program";
@@ -130,7 +130,15 @@ export type Expression =
   | AssignmentExpression
   | MemberExpression
   | IndexExpression
-  | ArrayLiteral;
+  | ArrayLiteral
+  | UpdateExpression;
+
+export interface UpdateExpression {
+  type: "UpdateExpression";
+  operator: "++" | "--";
+  argument: Expression;
+  prefix: boolean;
+}
 
 export interface MemberExpression {
   type: "MemberExpression";

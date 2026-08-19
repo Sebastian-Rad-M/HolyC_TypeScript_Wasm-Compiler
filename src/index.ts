@@ -1,36 +1,47 @@
 import { Lexer } from "./lexer.js";
 import { Parser } from "./parser.js";
-import { MemoryModel } from "./memory.js";
-import { Runtime } from "./runtime.js";
 import { Generator } from "./generator.js";
+import { Runtime } from "./runtime.js";
+import { MemoryModel } from "./memory.js";
+import { TaskManager } from "./scheduler.js";
 import fs from "fs";
 
 const code = `
-class MixedData {
-    U8  a;      // 1 byte
-    // 7 bytes of padding should exist here by default
-    I64 b;      // 8 bytes
-    U16 c;      // 2 bytes
-    // 6 bytes of padding should exist here
-}; // Total size should be 24 bytes, not 11 bytes.
+I64 spawn_counter = 0;
 
-U0 TestWasm9_Alignment() {
-    "--- WASM Stress 5: Class Alignment ---\\n";
-    MixedData arr[2];
-    
-    arr[0].b = 777;
-    arr[1].b = 888;
-    
-    // If the compiler tightly packs the struct (size 11), 
-    // pointer arithmetic for arr[1] will read the wrong linear memory offset.
-    if (sizeof(MixedData) == 24 && arr[1].b == 888) {
-        "PASS: Compiler padding matches HolyC x86-64 expectations.\\n";
-    } else {
-        "FAIL: Compiler is tightly packing structs. Pointer math is corrupted.\\n";
+U0 SpawnedTest(I64 val) {
+    I64 i;
+    for (i = 0; i < 5; i++) {
+        spawn_counter += val;
+        Yield; // Voluntarily hand control back to the OS scheduler
     }
 }
 
-TestWasm9_Alignment();
+U0 Test13_Tasks() {
+    "--- Test 13: Task Management & Yield ---\\n";
+    spawn_counter = 0;
+    
+    // Spawn a child task, passing 10 as the argument data
+    CTask *child = Spawn(&SpawnedTest, 10, "TestTask");
+    
+    I64 i;
+    for (i = 0; i < 5; i++) {
+        spawn_counter++;
+        Yield; // Yield to ensure the child gets interleaved CPU time
+    }
+    
+    // Wait for the spawned task to completely finish
+    Sleep(50); 
+    
+    // 5 iterations of +1 (parent) and 5 iterations of +10 (child)
+    if (spawn_counter == 55) {
+        "PASS: Task spawned and cooperative Yield maintained context.\\n";
+    } else {
+        "FAIL: Task scheduler failed or context corruption occurred.\\n";
+    }
+}
+
+Test13_Tasks();
 `;
 
 const lexer = new Lexer(code);
@@ -39,7 +50,7 @@ try {
   const parser = new Parser(tokens);
   const ast = parser.parse();
   
-  console.log("\\n--- Phase 3: Memory Model Test ---");
+  console.log("\n--- Phase 3: Memory Model Test ---");
   const memory = new MemoryModel();
   
   const ptr1 = memory.MAlloc(8);
@@ -51,9 +62,10 @@ try {
   console.log(`Allocated 8 bytes at: 0x${ptr3.toString(16)} (Aligned)`);
 
   // Phase 4 & 5: Code Generation & Runtime Test
-  console.log("\\n--- Phase 5: Code Generation & Runtime Test ---");
+  console.log("\n--- Phase 5: Code Generation & Runtime Test ---");
   const generator = new Generator();
   const wasmBinary = generator.generate(ast);
+  fs.writeFileSync("test.wast", generator.module.emitText());
   
   fs.writeFileSync("test.wasm", wasmBinary);
   console.log(`Generated test.wasm (${wasmBinary.length} bytes)`);
@@ -61,27 +73,34 @@ try {
   // Execute
   const wasmModule = new WebAssembly.Module(wasmBinary as any);
   const runtime = new Runtime();
-  // Wasm defines and exports the memory now
+  const taskManager = new TaskManager(runtime.memory);
+  
   const importObject = runtime.getImportObject();
-  // Remove the memory from imports because we export it instead
+  importObject.env = { ...importObject.env, ...taskManager.getImports() };
   delete importObject.env?.memory;
   
   const wasmInstance = new WebAssembly.Instance(wasmModule, importObject);
-  // Connect the Wasm memory back to the runtime so host functions can read it
   runtime.memory.memory = wasmInstance.exports.memory as WebAssembly.Memory;
+  taskManager.setInstance(wasmInstance);
 
   console.log("Successfully instantiated Wasm module!");
   
   if (typeof (wasmInstance.exports as any)._start === "function") {
-    console.log("Executing global statements...");
-    (wasmInstance.exports as any)._start();
-  }
-  
-  if (typeof (wasmInstance.exports as any).Main === "function") {
+    console.log("Executing global statements (Main Task)...");
+    taskManager.spawnMain(() => {
+        (wasmInstance.exports as any)._start();
+        if (typeof (wasmInstance.exports as any).Main === "function") {
+            const result = (wasmInstance.exports as any).Main();
+            console.log(`Main() returned:`, result);
+        }
+    });
+  } else if (typeof (wasmInstance.exports as any).Main === "function") {
     console.log("Executing Main()...");
-    const result = (wasmInstance.exports as any).Main();
-    console.log(`Main() returned:`, result);
-  } else if (typeof (wasmInstance.exports as any)._start !== "function") {
+    taskManager.spawnMain(() => {
+        const result = (wasmInstance.exports as any).Main();
+        console.log(`Main() returned:`, result);
+    });
+  } else {
     console.log("No Main() function exported and no global statements to execute.");
   }
 
