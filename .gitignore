@@ -1,5 +1,7 @@
 # build output
 dist/
+result
+result-*
 # Astro generated types
 .astro/
 
@@ -18,6 +20,7 @@ pnpm-debug.log*
 .env.local
 .env.development
 .env.test
+.direnv/
 
 # OS
 .DS_Store
