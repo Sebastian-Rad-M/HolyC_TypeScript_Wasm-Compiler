@@ -167,7 +167,7 @@ export interface AssignmentExpression {
 
 export interface CallExpression {
   type: "CallExpression";
-  callee: string;
+  callee: Expression | string;
   arguments: Expression[];
 }
 

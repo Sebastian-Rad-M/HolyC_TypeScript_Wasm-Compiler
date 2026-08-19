@@ -143,21 +143,13 @@ export class Parser {
           if (this.check(TokenType.Identifier)) this.advance();
       }
       
-      let isFuncPtr = false;
-      let firstName = "";
-      if (this.match(TokenType.OpenParen)) {
-         while (this.match(TokenType.Star)) firstPointerDepth++;
-         firstName = this.consume(TokenType.Identifier, "Expected identifier in function pointer.").value;
-         this.consume(TokenType.CloseParen, "Expected ')' after function pointer identifier.");
-         this.consume(TokenType.OpenParen, "Expected '(' for function pointer parameters.");
-         while (!this.check(TokenType.CloseParen) && !this.isAtEnd()) {
-            this.advance(); 
-         }
-         this.consume(TokenType.CloseParen, "Expected ')' after function pointer parameters.");
-         isFuncPtr = true;
-      } else {
-         firstName = this.consume(TokenType.Identifier, "Expected identifier after type.").value;
+      let extraParens = 0;
+      while (this.match(TokenType.OpenParen)) {
+          extraParens++;
+          while (this.match(TokenType.Star)) firstPointerDepth++;
       }
+      
+      let firstName = this.consume(TokenType.Identifier, "Expected identifier after type.").value;
       
       let funcPointerDepth = firstPointerDepth;
       let arraySize: AST.Expression | undefined = undefined;
@@ -167,6 +159,21 @@ export class Parser {
          }
          this.consume(TokenType.CloseBracket, "Expected ']'");
          funcPointerDepth++;
+      }
+
+      let isFuncPtr = false;
+      while (extraParens > 0) {
+          this.consume(TokenType.CloseParen, "Expected ')' after function pointer identifier.");
+          extraParens--;
+          isFuncPtr = true;
+      }
+      
+      if (isFuncPtr) {
+          this.consume(TokenType.OpenParen, "Expected '(' for function pointer parameters.");
+          while (!this.check(TokenType.CloseParen) && !this.isAtEnd()) {
+             this.advance(); 
+          }
+          this.consume(TokenType.CloseParen, "Expected ')' after function pointer parameters.");
       }
       
       if (!isFuncPtr && this.check(TokenType.OpenParen)) {
@@ -463,7 +470,7 @@ export class Parser {
       const op = this.previous();
       const value = this.assignment();
       
-      if (expr.type === "Identifier" || expr.type === "UnaryExpression" || expr.type === "MemberExpression") {
+      if (expr.type === "Identifier" || expr.type === "UnaryExpression" || expr.type === "MemberExpression" || expr.type === "IndexExpression") {
         if (op.type === TokenType.PlusEquals || op.type === TokenType.MinusEquals) {
            const binOp = op.type === TokenType.PlusEquals ? "+" : "-";
            return {
@@ -554,13 +561,14 @@ export class Parser {
     }
     this.consume(TokenType.CloseParen, "Expected ')' after arguments.");
     
-    if (callee.type !== "Identifier") {
-      throw new Error(`Can only call identifiers, line ${this.previous().line}`);
+    let calleeVal: AST.Expression | string = callee;
+    if (callee.type === "Identifier") {
+        calleeVal = callee.name;
     }
 
     return {
       type: "CallExpression",
-      callee: callee.name,
+      callee: calleeVal,
       arguments: args
     };
   }

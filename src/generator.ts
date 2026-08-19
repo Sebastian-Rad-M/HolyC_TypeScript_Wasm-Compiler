@@ -6,7 +6,7 @@ export class Generator {
   public module: binaryen.Module;
 
   private globalTypes = new Map<string, { type: binaryen.Type, className?: string, pointerDepth?: number, holycType?: string }>();
-  private classLayouts = new Map<string, { size: number, members: Map<string, { offset: number, type: binaryen.Type, pointerDepth?: number, holycType?: string }> }>();
+  private classLayouts = new Map<string, { size: number, align: number, members: Map<string, { offset: number, type: binaryen.Type, pointerDepth?: number, holycType?: string, isArray?: boolean }> }>();
   private functions = new Map<string, AST.FunctionDeclaration>();
   private stringTable: { offset: number, data: Uint8Array }[] = [];
   private functionTableMap = new Map<string, number>();
@@ -21,7 +21,7 @@ export class Generator {
 
   private getLocal(name: string) {
       for (let i = this.scopes.length - 1; i >= 0; i--) {
-          if (this.scopes[i].has(name)) return this.scopes[i].get(name);
+          if (this.scopes[i]!.has(name)) return this.scopes[i]!.get(name);
       }
       return undefined;
   }
@@ -126,25 +126,43 @@ export class Generator {
         let offset = 0;
         let maxSize = 0;
         const members = new Map<string, { offset: number, type: binaryen.Type, pointerDepth?: number, holycType?: string, isArray?: boolean }>();
+        let maxAlign = 1;
+
         for (const mem of stmt.members) {
+           let memberSize = 8;
+           let align = 8;
+           
+           if (mem.pointerDepth === 0) {
+               if (mem.varType === "I8" || mem.varType === "U8") { memberSize = 1; align = 1; }
+               else if (mem.varType === "I16" || mem.varType === "U16") { memberSize = 2; align = 2; }
+               else if (mem.varType === "I32" || mem.varType === "U32") { memberSize = 4; align = 4; }
+               else if (this.classLayouts.has(mem.varType)) {
+                   const layout = this.classLayouts.get(mem.varType)!;
+                   memberSize = layout.size;
+                   align = layout.align || 8;
+               }
+           }
+           
+           if (!stmt.isUnion && offset % align !== 0) {
+               offset += align - (offset % align);
+           }
+
            const type = this.mapType(mem.varType, mem.pointerDepth);
            members.set(mem.name, { offset, type, pointerDepth: mem.pointerDepth, holycType: mem.varType, isArray: !!mem.arraySize });
            
-           let memberSize = 8;
-           if (mem.pointerDepth === 0) {
-               if (mem.varType === "I8" || mem.varType === "U8") memberSize = 1;
-               else if (mem.varType === "I16" || mem.varType === "U16") memberSize = 2;
-               else if (mem.varType === "I32" || mem.varType === "U32") memberSize = 4;
-               else if (this.classLayouts.has(mem.varType)) memberSize = this.classLayouts.get(mem.varType)!.size;
-           }
            if (mem.arraySize && mem.arraySize.type === "NumberLiteral") {
-               memberSize *= parseInt(mem.arraySize.value);
+                memberSize *= Number(mem.arraySize.value);
            }
            
+           maxAlign = Math.max(maxAlign, align);
            maxSize = Math.max(maxSize, memberSize);
            if (!stmt.isUnion) offset += memberSize;
         }
-        this.classLayouts.set(stmt.name, { size: stmt.isUnion ? maxSize : offset, members });
+        
+        if (!stmt.isUnion && offset % maxAlign !== 0) {
+            offset += maxAlign - (offset % maxAlign);
+        }
+        this.classLayouts.set(stmt.name, { size: stmt.isUnion ? maxSize : offset, align: maxAlign, members });
       } else {
         globalStmts.push(stmt);
       }
@@ -173,7 +191,7 @@ export class Generator {
        for (const [name, index] of this.functionTableMap.entries()) {
            tableArr[index] = name;
        }
-       this.module.addTable("0", tableArr.length, tableArr.length, binaryen.funcref);
+       this.module.addTable("0", tableArr.length, tableArr.length);
        this.module.addActiveElementSegment("0", "0", tableArr, this.module.i32.const(0));
     }
 
@@ -219,13 +237,13 @@ export class Generator {
     node.params.forEach((p, i) => {
       const className = this.classLayouts.has(p.varType) ? p.varType : undefined;
       const isMemLocal = localsWithAddressTaken.has(p.name);
-      this.scopes[0].set(p.name, { index: i, type: paramTypes[i]!, className, isMemLocal, pointerDepth: p.pointerDepth, holycType: p.varType });
+      this.scopes[0]!.set(p.name, { index: i, type: paramTypes[i]!, className, isMemLocal, pointerDepth: p.pointerDepth, holycType: p.varType });
     });
 
     this.currentLocalBaseIndex = node.params.length;
     if (node.isVararg) {
-        this.scopes[0].set("argc", { index: this.currentLocalBaseIndex++, type: binaryen.i64, pointerDepth: 0, holycType: "I64", isMemLocal: false });
-        this.scopes[0].set("argv", { index: this.currentLocalBaseIndex++, type: binaryen.i64, pointerDepth: 1, holycType: "I64", isMemLocal: false });
+        this.scopes[0]!.set("argc", { index: this.currentLocalBaseIndex++, type: binaryen.i64, pointerDepth: 0, holycType: "I64", isMemLocal: false });
+        this.scopes[0]!.set("argv", { index: this.currentLocalBaseIndex++, type: binaryen.i64, pointerDepth: 1, holycType: "I64", isMemLocal: false });
     }
     
     const bodyExpr = this.generateStatement(node.body);
@@ -243,7 +261,7 @@ export class Generator {
           const index = this.currentLocalBaseIndex + this.currentLocalTypes.length;
           this.currentLocalTypes.push(type);
           
-          this.scopes[this.scopes.length - 1].set(stmt.name, { index, type, className, isMemLocal, pointerDepth: stmt.pointerDepth, holycType: stmt.varType, arraySize: stmt.arraySize });
+          this.scopes[this.scopes.length - 1]!.set(stmt.name, { index, type, className, isMemLocal, pointerDepth: stmt.pointerDepth, holycType: stmt.varType, arraySize: stmt.arraySize });
           
           let initExpr = 0;
           if (className && stmt.pointerDepth === 0) {
@@ -304,12 +322,12 @@ export class Generator {
         const caseBlocks: string[] = [];
         for (let i = 0; i < stmt.cases.length; i++) {
             caseBlocks.push(`case_${Math.random().toString(36).substring(7)}`);
-            if (stmt.cases[i].test === null) defaultIndex = i;
+            if (stmt.cases[i]!.test === null) defaultIndex = i;
         }
         
         const routeStmts: binaryen.ExpressionRef[] = [];
         for (let i = 0; i < stmt.cases.length; i++) {
-            const c = stmt.cases[i];
+            const c = stmt.cases[i]!;
             if (c.test !== null) {
                 const disc = this.generateExpression(stmt.discriminant);
                 const testVal = this.generateExpression(c.test);
@@ -323,24 +341,23 @@ export class Generator {
                 } else {
                     cond = this.module.i64.eq(disc, testVal);
                 }
-                routeStmts.push(this.module.br(caseBlocks[i], cond));
+                routeStmts.push(this.module.br(caseBlocks[i]!, cond));
             }
         }
         if (defaultIndex !== -1) {
-            routeStmts.push(this.module.br(caseBlocks[defaultIndex]));
+            routeStmts.push(this.module.br(caseBlocks[defaultIndex]!));
         } else {
             routeStmts.push(this.module.br(switchBlockName));
         }
         
-        let currentBlockExpr = this.module.block(caseBlocks[0], routeStmts);
+        let currentBlockExpr = this.module.block(caseBlocks[0]!, routeStmts);
         for (let i = 0; i < stmt.cases.length; i++) {
-            const bodyStmts = stmt.cases[i].consequent.map(s => this.generateStatement(s));
-            const blockContent = [currentBlockExpr, ...bodyStmts];
-            
-            if (i + 1 < stmt.cases.length) {
-                currentBlockExpr = this.module.block(caseBlocks[i + 1], blockContent);
+            const bodyStmts = stmt.cases[i]!.consequent.map(s => this.generateStatement(s));
+            if (i < stmt.cases.length - 1) {
+                const blockContent: binaryen.ExpressionRef[] = [ currentBlockExpr, ...bodyStmts ];
+                currentBlockExpr = this.module.block(caseBlocks[i + 1]!, blockContent);
             } else {
-                currentBlockExpr = this.module.block(switchBlockName, blockContent);
+                currentBlockExpr = this.module.block(switchBlockName, [ currentBlockExpr, ...bodyStmts ]);
             }
         }
         
@@ -585,18 +602,41 @@ export class Generator {
         throw new Error(`Unary operator ${expr.operator} not implemented`);
       }
       case "MemberExpression": {
-        const objectExpr = this.generateExpression(expr.object, binaryen.i64);
-        let className = "";
-        if (expr.object.type === "Identifier") {
-           const localDecl = this.getLocal(expr.object.name);
-           if (localDecl) className = localDecl.holycType || "";
-           else if (this.globalTypes.has(expr.object.name)) className = this.globalTypes.get(expr.object.name)!.holycType || "";
+        if (expr.object.type === "Identifier" && expr.object.name === "Fs") {
+            const fsBase = this.module.i32.const(0x10000); // Dummy FS segment base
+            const memberOffset = 0; // Simplified for now
+            return this.module.i64.load(0, 8, this.module.i32.add(fsBase, this.module.i32.const(memberOffset)));
         }
+
+        const findType = (e: AST.Expression): { t: string, depth: number } => {
+            if (e.type === "Identifier") {
+                const localDecl = this.getLocal(e.name);
+                if (localDecl) return { t: localDecl.holycType || "", depth: localDecl.pointerDepth || 0 };
+                if (this.globalTypes.has(e.name)) return { t: this.globalTypes.get(e.name)!.holycType || "", depth: this.globalTypes.get(e.name)!.pointerDepth || 0 };
+            }
+            if (e.type === "MemberExpression") {
+                const parent = findType(e.object);
+                if (parent.t && this.classLayouts.has(parent.t)) {
+                    const member = this.classLayouts.get(parent.t)!.members.get(e.property);
+                    if (member) return { t: member.holycType || "", depth: member.pointerDepth || 0 };
+                }
+            }
+            if (e.type === "IndexExpression") {
+                const parent = findType(e.object);
+                if (parent.depth > 0) return { t: parent.t, depth: parent.depth - 1 };
+            }
+            return { t: "", depth: 0 };
+        };
+
+        const resolved = findType(expr.object);
+        const className = resolved.t;
+        
         if (!className || !this.classLayouts.has(className)) throw new Error("Unknown class type for member access");
         const layout = this.classLayouts.get(className)!;
         const member = layout.members.get(expr.property);
         if (!member) throw new Error(`Member ${expr.property} not found`);
         
+        const objectExpr = this.generateExpression(expr.object, binaryen.i64);
         const ptr32 = this.module.i32.wrap(objectExpr);
         const offsetPtr = this.module.i32.add(ptr32, this.module.i32.const(member.offset));
         
@@ -678,16 +718,79 @@ export class Generator {
              this.module.i64.store(0, 8, ptr32, right),
              this.module.i64.const(0n)
           ], binaryen.i64);
+        } else if (expr.left.type === "IndexExpression") {
+            const objectExpr = this.generateExpression(expr.left.object, binaryen.i64);
+            const indexExpr = this.generateExpression(expr.left.index, binaryen.i64);
+            
+            let holycType = "";
+            let pointerDepth = 1;
+            const findType = (e: AST.Expression): { t: string, depth: number } => {
+                if (e.type === "Identifier") {
+                    const localDecl = this.getLocal(e.name);
+                    if (localDecl) return { t: localDecl.holycType || "", depth: localDecl.pointerDepth || 0 };
+                    if (this.globalTypes.has(e.name)) return { t: this.globalTypes.get(e.name)!.holycType || "", depth: this.globalTypes.get(e.name)!.pointerDepth || 0 };
+                }
+                if (e.type === "MemberExpression") {
+                    const parent = findType(e.object);
+                    if (parent.t && this.classLayouts.has(parent.t)) {
+                        const member = this.classLayouts.get(parent.t)!.members.get(e.property);
+                        if (member) return { t: member.holycType || "", depth: member.pointerDepth || 0 };
+                    }
+                }
+                return { t: "", depth: 0 };
+            };
+            const resolved = findType(expr.left.object);
+            holycType = resolved.t;
+            pointerDepth = resolved.depth;
+            
+            const ptr32 = this.module.i32.wrap(objectExpr);
+            const index32 = this.module.i32.wrap(indexExpr);
+            let bytes = 8;
+            if (pointerDepth <= 1 && (holycType === "U8" || holycType === "I8")) bytes = 1;
+            else if (pointerDepth <= 1 && (holycType === "U16" || holycType === "I16")) bytes = 2;
+            else if (pointerDepth <= 1 && (holycType === "U32" || holycType === "I32")) bytes = 4;
+            
+            const byteOffset = bytes === 1 ? index32 : this.module.i32.mul(index32, this.module.i32.const(bytes));
+            const finalPtr = this.module.i32.add(ptr32, byteOffset);
+            
+            const rightType = binaryen.getExpressionType(right);
+            let storeOp = this.module.i64.store(0, 8, finalPtr, right);
+            if (rightType === binaryen.f64) storeOp = this.module.f64.store(0, 8, finalPtr, right);
+            else {
+                if (bytes === 1) storeOp = this.module.i32.store8(0, 1, finalPtr, this.module.i32.wrap(right));
+                else if (bytes === 2) storeOp = this.module.i32.store16(0, 2, finalPtr, this.module.i32.wrap(right));
+                else if (bytes === 4) storeOp = this.module.i32.store(0, 4, finalPtr, this.module.i32.wrap(right));
+            }
+            return this.module.block(null, [ storeOp, right ], rightType);
         } else if (expr.left.type === "MemberExpression") {
           if (expr.left.object.type === "Identifier" && expr.left.object.name === "Fs") {
               return right;
           }
-          let className = "";
-          if (expr.left.object.type === "Identifier") {
-             const localDecl = this.getLocal(expr.left.object.name);
-             if (localDecl) className = localDecl.holycType || "";
-             else if (this.globalTypes.has(expr.left.object.name)) className = this.globalTypes.get(expr.left.object.name)!.holycType || "";
-          }
+
+          const findType = (e: AST.Expression): { t: string, depth: number } => {
+              if (e.type === "Identifier") {
+                  const localDecl = this.getLocal(e.name);
+                  if (localDecl) return { t: localDecl.holycType || "", depth: localDecl.pointerDepth || 0 };
+                  if (this.globalTypes.has(e.name)) return { t: this.globalTypes.get(e.name)!.holycType || "", depth: this.globalTypes.get(e.name)!.pointerDepth || 0 };
+              }
+              if (e.type === "MemberExpression") {
+                  const parent = findType(e.object);
+                  if (parent.t && this.classLayouts.has(parent.t)) {
+                      const member = this.classLayouts.get(parent.t)!.members.get(e.property);
+                      if (member) return { t: member.holycType || "", depth: member.pointerDepth || 0 };
+                  }
+              }
+              if (e.type === "IndexExpression") {
+                  const parent = findType(e.object);
+                  if (parent.depth > 0) return { t: parent.t, depth: parent.depth - 1 };
+              }
+              return { t: "", depth: 0 };
+          };
+
+          const resolved = findType(expr.left.object);
+          const className = resolved.t;
+          if (!className || !this.classLayouts.has(className)) throw new Error(`Unknown class type for member assignment`);
+          
           const layout = this.classLayouts.get(className)!;
           const member = layout.members.get(expr.left.property)!;
           const ptr32 = this.module.i32.wrap(this.generateExpression(expr.left.object));
@@ -705,8 +808,30 @@ export class Generator {
         throw new Error(`Complex assignment not fully implemented yet`);
       }
       case "CallExpression": {
-        let args = expr.arguments.map(arg => this.generateExpression(arg));
         let callee = expr.callee;
+        
+        if (callee === "sizeof" && expr.arguments.length === 1 && expr.arguments[0].type === "Identifier") {
+            const typeName = expr.arguments[0].name;
+            let size = 8;
+            if (typeName === "I8" || typeName === "U8") size = 1;
+            else if (typeName === "I16" || typeName === "U16") size = 2;
+            else if (typeName === "I32" || typeName === "U32") size = 4;
+            else if (this.classLayouts.has(typeName)) {
+                size = this.classLayouts.get(typeName)!.size;
+            }
+            return this.module.i64.const(BigInt(size));
+        }
+
+        let args = expr.arguments.map(arg => this.generateExpression(arg));
+        
+        if (typeof callee === "object") {
+            const targetExpr = this.generateExpression(callee as AST.Expression);
+            const target32 = this.module.i32.wrap(targetExpr);
+            const paramTypes = args.map(a => binaryen.getExpressionType(a));
+            const callType = binaryen.createType(paramTypes);
+            return this.module.call_indirect("0", target32, args, callType, binaryen.i64);
+        }
+
         if (callee === "Print") {
            callee = `Print${args.length - 1}`;
            // Wasm expects f64 values to be passed as f64 or bitcast to i64?
@@ -769,7 +894,7 @@ export class Generator {
 
                 const setupStmts: binaryen.ExpressionRef[] = [];
                 for (let i = 0; i < varargExprs.length; i++) {
-                    const argVal = varargExprs[i];
+                    const argVal = varargExprs[i]!;
                     const val = binaryen.getExpressionType(argVal) === binaryen.f64 ? this.module.i64.reinterpret(argVal) : argVal;
                     const ptr = this.module.i32.add(
                         this.module.global.get("__vararg_ptr", binaryen.i32),

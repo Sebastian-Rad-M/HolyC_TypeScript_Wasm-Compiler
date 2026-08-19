@@ -6,30 +6,31 @@ import { Generator } from "./generator.js";
 import fs from "fs";
 
 const code = `
-// This is a test HolyC file
-#exe { Cd(__DIR__);; }
+class MixedData {
+    U8  a;      // 1 byte
+    // 7 bytes of padding should exist here by default
+    I64 b;      // 8 bytes
+    U16 c;      // 2 bytes
+    // 6 bytes of padding should exist here
+}; // Total size should be 24 bytes, not 11 bytes.
 
-U0 TestWasm7_Shadowing() {
-    "--- WASM Stress 3: Reg Stripping & Scoping ---\\n";
-    I64 val = 10;
-    {
-        // HolyC allows binding to specific x86 registers.
-        // Your compiler must parse this, ignore the R15 hardware hint,
-        // and map it to a fresh WASM local.
-        I64 reg R15 val = 20;
-        if (val != 20) {
-            "FAIL: Shadowed local did not evaluate correctly.\\n";
-            return;
-        }
-    }
-    if (val == 10) {
-        "PASS: Hardware register hints safely ignored and scope integrity maintained.\\n";
+U0 TestWasm9_Alignment() {
+    "--- WASM Stress 5: Class Alignment ---\\n";
+    MixedData arr[2];
+    
+    arr[0].b = 777;
+    arr[1].b = 888;
+    
+    // If the compiler tightly packs the struct (size 11), 
+    // pointer arithmetic for arr[1] will read the wrong linear memory offset.
+    if (sizeof(MixedData) == 24 && arr[1].b == 888) {
+        "PASS: Compiler padding matches HolyC x86-64 expectations.\\n";
     } else {
-        "FAIL: Outer scope was corrupted.\\n";
+        "FAIL: Compiler is tightly packing structs. Pointer math is corrupted.\\n";
     }
 }
 
-TestWasm7_Shadowing();
+TestWasm9_Alignment();
 `;
 
 const lexer = new Lexer(code);
