@@ -9,7 +9,9 @@ export class Generator {
   private classLayouts = new Map<string, { size: number, members: Map<string, { offset: number, type: binaryen.Type, pointerDepth?: number, holycType?: string }> }>();
   private functions = new Map<string, AST.FunctionDeclaration>();
   private stringTable: { offset: number, data: Uint8Array }[] = [];
+  private functionTableMap = new Map<string, number>();
   private staticDataPtr = 0x10000;
+  private currentBreakTarget: string | null = null;
   
   constructor() {
     this.module = new binaryen.Module();
@@ -136,6 +138,16 @@ export class Generator {
     for (const func of functions) {
        this.generateFunction(func);
     }
+    
+    if (this.functionTableMap.size > 0) {
+       this.module.addFunction("__null_func", binaryen.none, binaryen.none, [], this.module.unreachable());
+       const tableArr = new Array(this.functionTableMap.size + 1).fill("__null_func");
+       for (const [name, index] of this.functionTableMap.entries()) {
+           tableArr[index] = name;
+       }
+       this.module.addTable("0", tableArr.length, tableArr.length, binaryen.funcref);
+       this.module.addActiveElementSegment("0", "0", tableArr, this.module.i32.const(0));
+    }
 
     if (!this.module.validate()) {
       throw new Error("Binaryen validation failed! The generated Wasm is invalid.");
@@ -197,6 +209,8 @@ export class Generator {
       } else if (stmt.type === "ForStatement") {
         if (stmt.init) extractLocals(stmt.init);
         extractLocals(stmt.body);
+      } else if (stmt.type === "SwitchStatement") {
+        stmt.cases.forEach(c => c.consequent.forEach(extractLocals));
       }
     };
     node.body.body.forEach(extractLocals);
@@ -278,6 +292,64 @@ export class Generator {
           return this.module.return(this.generateExpression(stmt.argument));
         }
         return this.module.return();
+      }
+      case "BreakStatement": {
+        if (!this.currentBreakTarget) throw new Error("Break outside of switch/loop");
+        return this.module.br(this.currentBreakTarget);
+      }
+      case "SwitchStatement": {
+        if (stmt.cases.length === 0) return this.module.nop();
+        
+        const switchBlockName = `switch_${Math.random().toString(36).substring(7)}`;
+        const oldTarget = this.currentBreakTarget;
+        this.currentBreakTarget = switchBlockName;
+        
+        let defaultIndex = -1;
+        const caseBlocks: string[] = [];
+        for (let i = 0; i < stmt.cases.length; i++) {
+            caseBlocks.push(`case_${Math.random().toString(36).substring(7)}`);
+            if (stmt.cases[i].test === null) defaultIndex = i;
+        }
+        
+        const routeStmts: binaryen.ExpressionRef[] = [];
+        for (let i = 0; i < stmt.cases.length; i++) {
+            const c = stmt.cases[i];
+            if (c.test !== null) {
+                const disc = this.generateExpression(stmt.discriminant);
+                const testVal = this.generateExpression(c.test);
+                let cond: binaryen.ExpressionRef;
+                if (c.rangeEnd) {
+                    const endVal = this.generateExpression(c.rangeEnd);
+                    cond = this.module.i32.and(
+                        this.module.i64.ge_s(disc, testVal),
+                        this.module.i64.le_s(disc, endVal)
+                    );
+                } else {
+                    cond = this.module.i64.eq(disc, testVal);
+                }
+                routeStmts.push(this.module.br(caseBlocks[i], cond));
+            }
+        }
+        if (defaultIndex !== -1) {
+            routeStmts.push(this.module.br(caseBlocks[defaultIndex]));
+        } else {
+            routeStmts.push(this.module.br(switchBlockName));
+        }
+        
+        let currentBlockExpr = this.module.block(caseBlocks[0], routeStmts);
+        for (let i = 0; i < stmt.cases.length; i++) {
+            const bodyStmts = stmt.cases[i].consequent.map(s => this.generateStatement(s));
+            const blockContent = [currentBlockExpr, ...bodyStmts];
+            
+            if (i + 1 < stmt.cases.length) {
+                currentBlockExpr = this.module.block(caseBlocks[i + 1], blockContent);
+            } else {
+                currentBlockExpr = this.module.block(switchBlockName, blockContent);
+            }
+        }
+        
+        this.currentBreakTarget = oldTarget;
+        return currentBlockExpr;
       }
       case "ExpressionStatement": {
         const exprRef = this.generateExpression(stmt.expression);
@@ -447,6 +519,16 @@ export class Generator {
         }
       }
       case "UnaryExpression": {
+        if (expr.operator === "-") {
+          const arg = this.generateExpression(expr.argument);
+          const type = binaryen.getExpressionType(arg);
+          if (type === binaryen.f64) return this.module.f64.neg(arg);
+          return this.module.i64.sub(this.module.i64.const(0n), arg);
+        }
+        if (expr.operator === "!") {
+          const arg = this.generateExpression(expr.argument);
+          return this.module.i64.extend_u(this.module.i64.eq(arg, this.module.i64.const(0n)));
+        }
         if (expr.operator === "*") {
           const ptrExpr = this.generateExpression(expr.argument);
           const ptr32 = this.module.i32.wrap(ptrExpr);
@@ -454,9 +536,19 @@ export class Generator {
           return this.module.i64.load(0, 8, ptr32);
         }
         if (expr.operator === "&") {
-          if (expr.argument.type === "Identifier" && this.currentLocals.has(expr.argument.name)) {
-             const { index, isMemLocal, className } = this.currentLocals.get(expr.argument.name)!;
-             if (isMemLocal || className) return this.module.local.get(index, binaryen.i64);
+          if (expr.argument.type === "Identifier") {
+             if (this.currentLocals.has(expr.argument.name)) {
+                const { index, isMemLocal, className } = this.currentLocals.get(expr.argument.name)!;
+                if (isMemLocal || className) return this.module.local.get(index, binaryen.i64);
+             }
+             if (this.functions.has(expr.argument.name)) {
+                 let tableIndex = this.functionTableMap.get(expr.argument.name);
+                 if (tableIndex === undefined) {
+                     tableIndex = this.functionTableMap.size + 1;
+                     this.functionTableMap.set(expr.argument.name, tableIndex);
+                 }
+                 return this.module.i64.const(BigInt(tableIndex));
+             }
           }
           return this.module.i64.const(BigInt(0x20000));
         }
@@ -562,6 +654,14 @@ export class Generator {
         
         if (callee.startsWith("Print") || callee === "GrLine") {
           return this.module.call(callee, args, binaryen.none);
+        }
+        
+        if (this.currentLocals.has(callee) || this.globalTypes.has(callee)) {
+            const targetExpr = this.generateExpression({ type: "Identifier", name: callee });
+            const target32 = this.module.i32.wrap(targetExpr);
+            const paramTypes = args.map(a => binaryen.getExpressionType(a));
+            const callType = binaryen.createType(paramTypes);
+            return this.module.call_indirect("0", target32, args, callType, binaryen.i64);
         }
         
         const funcDecl = this.functions.get(callee);

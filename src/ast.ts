@@ -14,6 +14,8 @@ export type Statement =
   | IfStatement
   | WhileStatement
   | ForStatement
+  | SwitchStatement
+  | BreakStatement
   | BlockStatement;
 
 export interface FunctionDeclaration {
@@ -80,6 +82,23 @@ export interface ForStatement {
   test: Expression | null;
   update: Expression | null;
   body: Statement;
+}
+
+export interface BreakStatement {
+  type: "BreakStatement";
+}
+
+export interface SwitchCase {
+  type: "SwitchCase";
+  test: Expression | null; // null means default
+  rangeEnd?: Expression | null; // For case 1...5
+  consequent: Statement[];
+}
+
+export interface SwitchStatement {
+  type: "SwitchStatement";
+  discriminant: Expression;
+  cases: SwitchCase[];
 }
 
 export interface ArrayLiteral {

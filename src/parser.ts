@@ -133,7 +133,22 @@ export class Parser {
       let firstPointerDepth = 0;
       while (this.match(TokenType.Star)) firstPointerDepth++;
       
-      const firstName = this.consume(TokenType.Identifier, "Expected identifier after type.").value;
+      let isFuncPtr = false;
+      let firstName = "";
+      if (this.match(TokenType.OpenParen)) {
+         while (this.match(TokenType.Star)) firstPointerDepth++;
+         firstName = this.consume(TokenType.Identifier, "Expected identifier in function pointer.").value;
+         this.consume(TokenType.CloseParen, "Expected ')' after function pointer identifier.");
+         this.consume(TokenType.OpenParen, "Expected '(' for function pointer parameters.");
+         while (!this.check(TokenType.CloseParen) && !this.isAtEnd()) {
+            this.advance(); 
+         }
+         this.consume(TokenType.CloseParen, "Expected ')' after function pointer parameters.");
+         isFuncPtr = true;
+      } else {
+         firstName = this.consume(TokenType.Identifier, "Expected identifier after type.").value;
+      }
+      
       let funcPointerDepth = firstPointerDepth;
       let arraySize: AST.Expression | undefined = undefined;
       while (this.match(TokenType.OpenBracket)) {
@@ -144,7 +159,7 @@ export class Parser {
          funcPointerDepth++;
       }
       
-      if (this.match(TokenType.OpenParen)) {
+      if (!isFuncPtr && this.match(TokenType.OpenParen)) {
         // Function Declaration
         const params: AST.Parameter[] = [];
         if (!this.check(TokenType.CloseParen)) {
@@ -227,7 +242,12 @@ export class Parser {
     if (this.match(TokenType.If)) return this.ifStatement();
     if (this.match(TokenType.While)) return this.whileStatement();
     if (this.match(TokenType.For)) return this.forStatement();
+    if (this.match(TokenType.Switch)) return this.switchStatement();
     if (this.match(TokenType.Return)) return this.returnStatement();
+    if (this.match(TokenType.Break)) {
+       this.consume(TokenType.Semicolon, "Expected ';' after break.");
+       return { type: "BreakStatement" };
+    }
     if (this.check(TokenType.OpenBrace)) return this.blockStatement();
 
     return this.expressionStatement();
@@ -284,6 +304,46 @@ export class Parser {
 
     const body = this.statement();
     return { type: "ForStatement", init, test, update, body };
+  }
+
+  private switchStatement(): AST.SwitchStatement {
+    this.consume(TokenType.OpenParen, "Expected '(' after 'switch'.");
+    const discriminant = this.expression();
+    this.consume(TokenType.CloseParen, "Expected ')' after switch value.");
+    this.consume(TokenType.OpenBrace, "Expected '{' before switch body.");
+
+    const cases: AST.SwitchCase[] = [];
+    while (!this.check(TokenType.CloseBrace) && !this.isAtEnd()) {
+      if (this.match(TokenType.Case)) {
+        const test = this.expression();
+        let rangeEnd: AST.Expression | null = null;
+        if (this.match(TokenType.Ellipsis)) {
+           rangeEnd = this.expression();
+        }
+        this.consume(TokenType.Colon, "Expected ':' after case value.");
+        
+        const consequent: AST.Statement[] = [];
+        while (!this.check(TokenType.Case) && !this.check(TokenType.Default) && !this.check(TokenType.CloseBrace) && !this.isAtEnd()) {
+          const decl = this.declaration();
+          if (Array.isArray(decl)) consequent.push(...decl);
+          else consequent.push(decl as AST.Statement);
+        }
+        cases.push({ type: "SwitchCase", test, rangeEnd, consequent });
+      } else if (this.match(TokenType.Default)) {
+        this.consume(TokenType.Colon, "Expected ':' after default.");
+        const consequent: AST.Statement[] = [];
+        while (!this.check(TokenType.Case) && !this.check(TokenType.Default) && !this.check(TokenType.CloseBrace) && !this.isAtEnd()) {
+          const decl = this.declaration();
+          if (Array.isArray(decl)) consequent.push(...decl);
+          else consequent.push(decl as AST.Statement);
+        }
+        cases.push({ type: "SwitchCase", test: null, consequent });
+      } else {
+        throw new Error(`Expected 'case' or 'default' inside switch, got ${this.peek().type} at line ${this.peek().line}`);
+      }
+    }
+    this.consume(TokenType.CloseBrace, "Expected '}' after switch body.");
+    return { type: "SwitchStatement", discriminant, cases };
   }
 
   private returnStatement(): AST.ReturnStatement {

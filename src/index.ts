@@ -9,20 +9,30 @@ const code = `
 // This is a test HolyC file
 #exe { Cd(__DIR__);; }
 
-U0 Test3_Pointers() {
-    "--- Test 3: Pointers ---\\n";
-    I64 arr[3] = {10, 20, 30};
-    I64 *ptr = arr;
+U0 Test9_SwitchRanges() {
+    "--- Test 9: Switch Statements & Ranges ---\\n";
+    I64 val = 7;
+    I64 result = 0;
     
-    // Check dereferencing and pointer arithmetic
-    if (*ptr == 10 && *(ptr + 1) == 20 && ptr[2] == 30) {
-        "PASS: Pointers and array indexing working.\\n";
+    switch (val) {
+        case 1...5:
+            result = 1;
+            break;
+        case 6...10:
+            result = 2;
+            break;
+        default:
+            result = -1;
+    }
+    
+    if (result == 2) {
+        "PASS: Switch statements and range parsing working.\\n";
     } else {
-        "FAIL: Pointer arithmetic or dereferencing broken.\\n";
+        "FAIL: Switch statement branching or bounds checking broken.\\n";
     }
 }
 
-Test3_Pointers();
+Test9_SwitchRanges();
 `;
 
 const lexer = new Lexer(code);

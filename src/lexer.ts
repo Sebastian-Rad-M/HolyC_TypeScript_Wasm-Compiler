@@ -18,6 +18,10 @@ export enum TokenType {
   While = "while",
   For = "for",
   Class = "class",
+  Switch = "switch",
+  Case = "case",
+  Default = "default",
+  Break = "break",
   HashExe = "#exe",
 
   // Directives
@@ -60,6 +64,8 @@ export enum TokenType {
   LogicalOr = "||",
   Bang = "!",
   Dot = ".",
+  Colon = ":",
+  Ellipsis = "...",
 
   // End of file
   EOF = "EOF",
@@ -162,7 +168,7 @@ export class Lexer {
       const singleCharTokens: Record<string, TokenType> = {
         '(': TokenType.OpenParen, ')': TokenType.CloseParen, '{': TokenType.OpenBrace, '}': TokenType.CloseBrace,
         '[': TokenType.OpenBracket, ']': TokenType.CloseBracket, ';': TokenType.Semicolon, ',': TokenType.Comma,
-        '*': TokenType.Star, '/': TokenType.Slash, '%': TokenType.Modulo
+        '*': TokenType.Star, '/': TokenType.Slash, '%': TokenType.Modulo, ':': TokenType.Colon
       };
 
       if (singleCharTokens[c]) {
@@ -254,9 +260,17 @@ export class Lexer {
       }
 
       // Numbers and Dot
-      if (c === '.' && !this.isDigit(this.peek())) {
-        tokens.push({ type: TokenType.Dot, value: '.', line: startLine, column: startCol });
-        continue;
+      if (c === '.') {
+        if (this.peek() === '.' && this.peekNext() === '.') {
+            this.advance();
+            this.advance();
+            tokens.push({ type: TokenType.Ellipsis, value: "...", line: startLine, column: startCol });
+            continue;
+        }
+        if (!this.isDigit(this.peek())) {
+            tokens.push({ type: TokenType.Dot, value: '.', line: startLine, column: startCol });
+            continue;
+        }
       }
       
       if (this.isDigit(c) || (c === '.' && this.isDigit(this.peek()))) {
@@ -269,7 +283,12 @@ export class Lexer {
         } else {
           let hasDot = c === '.';
           while (this.isDigit(this.peek()) || (!hasDot && this.peek() === '.')) {
-            if (this.peek() === '.') hasDot = true;
+            if (this.peek() === '.') {
+               if (this.peekNext() === '.') {
+                   break;
+               }
+               hasDot = true;
+            }
             numValue += this.advance();
           }
         }
@@ -286,7 +305,8 @@ export class Lexer {
           U0: TokenType.U0, U8: TokenType.U8, I8: TokenType.I8, 
           I64: TokenType.I64, U64: TokenType.U64, F64: TokenType.F64,
           I32: TokenType.I32, U32: TokenType.U32, I16: TokenType.I16, U16: TokenType.U16,
-          return: TokenType.Return, if: TokenType.If, else: TokenType.Else, while: TokenType.While, for: TokenType.For, class: TokenType.Class
+          return: TokenType.Return, if: TokenType.If, else: TokenType.Else, while: TokenType.While, for: TokenType.For, class: TokenType.Class,
+          switch: TokenType.Switch, case: TokenType.Case, default: TokenType.Default, break: TokenType.Break
         };
 
         tokens.push({ type: keywords[idValue] || TokenType.Identifier, value: idValue, line: startLine, column: startCol });
