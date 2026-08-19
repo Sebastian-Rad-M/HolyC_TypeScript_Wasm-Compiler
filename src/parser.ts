@@ -135,7 +135,11 @@ export class Parser {
       
       const firstName = this.consume(TokenType.Identifier, "Expected identifier after type.").value;
       let funcPointerDepth = firstPointerDepth;
+      let arraySize: AST.Expression | undefined = undefined;
       while (this.match(TokenType.OpenBracket)) {
+         if (!this.check(TokenType.CloseBracket)) {
+             arraySize = this.expression();
+         }
          this.consume(TokenType.CloseBracket, "Expected ']'");
          funcPointerDepth++;
       }
@@ -191,14 +195,19 @@ export class Parser {
           varType: typeStr,
           name: currentName,
           initializer,
-          pointerDepth: currentPointerDepth
+          pointerDepth: currentPointerDepth,
+          arraySize
         } as any);
         
         if (this.match(TokenType.Comma)) {
            currentPointerDepth = 0;
            while (this.match(TokenType.Star)) currentPointerDepth++;
            currentName = this.consume(TokenType.Identifier, "Expected identifier after comma.").value;
+           arraySize = undefined;
            while (this.match(TokenType.OpenBracket)) {
+              if (!this.check(TokenType.CloseBracket)) {
+                  arraySize = this.expression();
+              }
               this.consume(TokenType.CloseBracket, "Expected ']'");
               currentPointerDepth++;
            }
@@ -454,6 +463,17 @@ export class Parser {
   }
 
   private primary(): AST.Expression {
+    if (this.match(TokenType.OpenBrace)) {
+      const elements: AST.Expression[] = [];
+      if (!this.check(TokenType.CloseBrace)) {
+        do {
+          elements.push(this.expression());
+        } while (this.match(TokenType.Comma));
+      }
+      this.consume(TokenType.CloseBrace, "Expected '}' after array literal.");
+      return { type: "ArrayLiteral", elements };
+    }
+
     if (this.match(TokenType.Number)) {
       const raw = this.previous().value;
       return { type: "NumberLiteral", value: Number(raw), rawValue: raw };

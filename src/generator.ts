@@ -181,8 +181,8 @@ export class Generator {
       if (stmt.type === "VariableDeclaration") {
         const type = this.mapType(stmt.varType, stmt.pointerDepth);
         const className = this.classLayouts.has(stmt.varType) ? stmt.varType : undefined;
-        const isMemLocal = localsWithAddressTaken.has(stmt.name);
-        this.currentLocals.set(stmt.name, { index: node.params.length + localTypes.length, type, className, isMemLocal, pointerDepth: stmt.pointerDepth, holycType: stmt.varType });
+        const isMemLocal = localsWithAddressTaken.has(stmt.name) || !!stmt.arraySize;
+        this.currentLocals.set(stmt.name, { index: node.params.length + localTypes.length, type, className, isMemLocal, pointerDepth: stmt.pointerDepth, holycType: stmt.varType, arraySize: stmt.arraySize });
         localTypes.push(type);
         if (className && stmt.pointerDepth === 0) localInitStmts.push(stmt);
         else if (isMemLocal) localInitStmts.push(stmt);
@@ -206,16 +206,27 @@ export class Generator {
       if (stmt.type === "VariableDeclaration") {
         const { index, isMemLocal, className } = this.currentLocals.get(stmt.name)!;
         let initExpr = 0;
-        if (className && stmt.pointerDepth === 0) {
-          const size = this.classLayouts.get(className)!.size;
-          const ptrExpr = this.module.global.get("heap_ptr", binaryen.i32);
-          const newHeapPtr = this.module.i32.add(ptrExpr, this.module.i32.const(size));
-          initExpr = this.module.block(null, [ this.module.global.set("heap_ptr", newHeapPtr), this.module.i64.extend_u(ptrExpr) ], binaryen.i64);
+        
+        let allocSize = 0;
+        if (stmt.arraySize && stmt.arraySize.type === "NumberLiteral") {
+            const numElements = stmt.arraySize.value;
+            let bytes = 8;
+            if (stmt.pointerDepth === 1 && (stmt.varType === "I8" || stmt.varType === "U8")) bytes = 1;
+            else if (stmt.pointerDepth === 1 && (stmt.varType === "I16" || stmt.varType === "U16")) bytes = 2;
+            else if (stmt.pointerDepth === 1 && (stmt.varType === "I32" || stmt.varType === "U32")) bytes = 4;
+            allocSize = numElements * bytes;
+        } else if (className && stmt.pointerDepth === 0) {
+            allocSize = this.classLayouts.get(className)!.size;
         } else if (isMemLocal) {
+            allocSize = 8;
+        }
+
+        if (allocSize > 0) {
           const ptrExpr = this.module.global.get("heap_ptr", binaryen.i32);
-          const newHeapPtr = this.module.i32.add(ptrExpr, this.module.i32.const(8));
+          const newHeapPtr = this.module.i32.add(ptrExpr, this.module.i32.const(allocSize));
           initExpr = this.module.block(null, [ this.module.global.set("heap_ptr", newHeapPtr), this.module.i64.extend_u(ptrExpr) ], binaryen.i64);
         }
+
         if (initExpr) blockStmts.push(this.module.local.set(index, initExpr));
       }
     }
@@ -233,8 +244,27 @@ export class Generator {
       case "VariableDeclaration": {
         if (stmt.initializer) {
           const { index, type, isMemLocal, className } = this.currentLocals.get(stmt.name)!;
+          
+          if (stmt.initializer.type === "ArrayLiteral") {
+            const ptr32 = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
+            const stores = stmt.initializer.elements.map((el, i) => {
+                const val = this.generateExpression(el);
+                let bytes = 8;
+                if (stmt.pointerDepth === 1 && (stmt.varType === "I8" || stmt.varType === "U8")) bytes = 1;
+                else if (stmt.pointerDepth === 1 && (stmt.varType === "I16" || stmt.varType === "U16")) bytes = 2;
+                else if (stmt.pointerDepth === 1 && (stmt.varType === "I32" || stmt.varType === "U32")) bytes = 4;
+                
+                const offset = i * bytes;
+                if (bytes === 1) return this.module.i32.store8(offset, 1, ptr32, this.module.i32.wrap(val));
+                if (bytes === 2) return this.module.i32.store16(offset, 2, ptr32, this.module.i32.wrap(val));
+                if (bytes === 4) return this.module.i32.store(offset, 4, ptr32, this.module.i32.wrap(val));
+                return this.module.i64.store(offset, 8, ptr32, val);
+            });
+            return this.module.block(null, stores, binaryen.none);
+          }
+          
           const initExpr = this.generateExpression(stmt.initializer, type);
-          if (isMemLocal && !className) {
+          if (isMemLocal && !className && !stmt.arraySize) {
                const ptr32 = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
                const storeVal = type === binaryen.f64 ? this.module.i64.reinterpret(initExpr) : initExpr;
                return this.module.i64.store(0, 8, ptr32, storeVal);
@@ -317,7 +347,12 @@ export class Generator {
       }
       case "Identifier": {
         if (this.currentLocals.has(expr.name)) {
-          const { index, type, isMemLocal, className } = this.currentLocals.get(expr.name)!;
+          const { index, type, isMemLocal, className, arraySize } = this.currentLocals.get(expr.name)!;
+          
+          if (arraySize) {
+             return this.module.local.get(index, binaryen.i64); // Arrays decay to pointers
+          }
+          
           if (isMemLocal && !className) {
              const ptr32 = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
              const load = this.module.i64.load(0, 8, ptr32);
@@ -336,6 +371,31 @@ export class Generator {
         if (isF64) {
            if (binaryen.getExpressionType(left) === binaryen.i64) left = this.module.f64.convert_s.i64(left);
            if (binaryen.getExpressionType(right) === binaryen.i64) right = this.module.f64.convert_s.i64(right);
+        }
+
+        // Pointer arithmetic scaling
+        if (!isF64 && (expr.operator === "+" || expr.operator === "-")) {
+           const checkPtr = (e: AST.Expression) => {
+               if (e.type === "Identifier" && this.currentLocals.has(e.name)) {
+                   const depth = this.currentLocals.get(e.name)!.pointerDepth || 0;
+                   const type = this.currentLocals.get(e.name)!.holycType || "";
+                   if (depth > 0) {
+                      if (depth === 1 && (type === "I8" || type === "U8")) return 1;
+                      if (depth === 1 && (type === "I16" || type === "U16")) return 2;
+                      if (depth === 1 && (type === "I32" || type === "U32")) return 4;
+                      return 8;
+                   }
+               }
+               return 0;
+           };
+           const lBytes = checkPtr(expr.left);
+           const rBytes = checkPtr(expr.right);
+           
+           if (lBytes > 1 && rBytes === 0) {
+               right = this.module.i64.mul(right, this.module.i64.const(BigInt(lBytes)));
+           } else if (rBytes > 1 && lBytes === 0 && expr.operator === "+") {
+               left = this.module.i64.mul(left, this.module.i64.const(BigInt(rBytes)));
+           }
         }
         
         switch (expr.operator) {

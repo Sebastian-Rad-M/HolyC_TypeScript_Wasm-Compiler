@@ -43,6 +43,7 @@ export interface VariableDeclaration {
   name: string;
   initializer: Expression | null;
   pointerDepth: number;
+  arraySize?: Expression;
 }
 
 export interface BlockStatement {
@@ -81,6 +82,11 @@ export interface ForStatement {
   body: Statement;
 }
 
+export interface ArrayLiteral {
+  type: "ArrayLiteral";
+  elements: Expression[];
+}
+
 export type Expression =
   | BinaryExpression
   | UnaryExpression
@@ -90,7 +96,8 @@ export type Expression =
   | CallExpression
   | AssignmentExpression
   | MemberExpression
-  | IndexExpression;
+  | IndexExpression
+  | ArrayLiteral;
 
 export interface MemberExpression {
   type: "MemberExpression";

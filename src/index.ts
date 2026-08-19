@@ -9,24 +9,20 @@ const code = `
 // This is a test HolyC file
 #exe { Cd(__DIR__);; }
 
-U0 Test2_ControlFlow() {
-    "--- Test 2: Control Flow ---\\n";
-    I64 i, count = 0;
+U0 Test3_Pointers() {
+    "--- Test 3: Pointers ---\\n";
+    I64 arr[3] = {10, 20, 30};
+    I64 *ptr = arr;
     
-    for (i = 0; i < 10; i++) {
-        if (i % 2 == 0) {
-            count++;
-        }
-    }
-    
-    if (count == 5) {
-        "PASS: For-loops and If-statements working.\\n";
+    // Check dereferencing and pointer arithmetic
+    if (*ptr == 10 && *(ptr + 1) == 20 && ptr[2] == 30) {
+        "PASS: Pointers and array indexing working.\\n";
     } else {
-        "FAIL: Control flow generated incorrect branching.\\n";
+        "FAIL: Pointer arithmetic or dereferencing broken.\\n";
     }
 }
 
-Test2_ControlFlow();
+Test3_Pointers();
 `;
 
 const lexer = new Lexer(code);
