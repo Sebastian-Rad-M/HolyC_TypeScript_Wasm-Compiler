@@ -66,13 +66,19 @@ export class Parser {
         }
         continue;
       }
-      statements.push(this.declaration());
+      const decl = this.declaration();
+      if (Array.isArray(decl)) statements.push(...decl);
+      else statements.push(decl as AST.Statement);
     }
     return { type: "Program", body: statements };
   }
 
-  private isType(type: TokenType): boolean {
-    return [TokenType.U0, TokenType.I64, TokenType.F64, TokenType.I8, TokenType.U8].includes(type);
+  private definedTypes = new Set<string>();
+
+  private isType(token: Token): boolean {
+    if ([TokenType.U0, TokenType.I64, TokenType.U64, TokenType.F64, TokenType.I32, TokenType.U32, TokenType.I16, TokenType.U16, TokenType.I8, TokenType.U8].includes(token.type)) return true;
+    if (token.type === TokenType.Identifier && this.definedTypes.has(token.value)) return true;
+    return false;
   }
 
   private parseType(): AST.Type {
@@ -80,35 +86,129 @@ export class Parser {
     return typeToken.value as AST.Type;
   }
 
-  private declaration(): AST.Statement {
-    if (this.isType(this.peek().type)) {
-      const typeStr = this.parseType();
-      const name = this.consume(TokenType.Identifier, "Expected identifier after type.").value;
+  private declaration(): AST.Statement | AST.Statement[] {
+    if (this.match(TokenType.HashExe)) {
+      this.consume(TokenType.OpenBrace, "Expected '{' after #exe");
+      let bodyText = "";
+      while (!this.check(TokenType.CloseBrace) && !this.isAtEnd()) {
+        const tok = this.advance();
+        if (tok.type === TokenType.String) bodyText += '"' + tok.value.replace(/\n/g, "\\n") + '" ';
+        else bodyText += tok.value + " ";
+      }
+      this.consume(TokenType.CloseBrace, "Expected '}' after #exe block");
+      let result: any = undefined;
+      const Yield = (val: any) => { result = val; };
+      try {
+        const ev = eval(bodyText);
+        if (typeof ev === "string" && result === undefined) console.log(ev);
+      } catch (e) { console.error("Error evaluating #exe:", e); }
+      return { type: "BlockStatement", body: [] };
+    }
 
+    if (this.match(TokenType.Class)) {
+      const name = this.consume(TokenType.Identifier, "Expected class name.").value;
+      this.definedTypes.add(name);
+      this.consume(TokenType.OpenBrace, "Expected '{' before class body.");
+      const members: AST.VariableDeclaration[] = [];
+      while (!this.check(TokenType.CloseBrace) && !this.isAtEnd()) {
+        const typeStr = this.parseType();
+        let memPointerDepth = 0;
+        while (this.match(TokenType.Star)) memPointerDepth++;
+        const memName = this.consume(TokenType.Identifier, "Expected member name.").value;
+        while (this.match(TokenType.OpenBracket)) {
+           this.consume(TokenType.CloseBracket, "Expected ']'");
+           memPointerDepth++;
+        }
+        this.consume(TokenType.Semicolon, "Expected ';' after member.");
+        members.push({ type: "VariableDeclaration", varType: typeStr, name: memName, initializer: null, pointerDepth: memPointerDepth } as any);
+      }
+      this.consume(TokenType.CloseBrace, "Expected '}' after class body.");
+      this.consume(TokenType.Semicolon, "Expected ';' after class declaration.");
+      return { type: "ClassDeclaration", name, members };
+    }
+
+    if (this.isType(this.peek())) {
+      const typeStr = this.parseType();
+      
+      let firstPointerDepth = 0;
+      while (this.match(TokenType.Star)) firstPointerDepth++;
+      
+      const firstName = this.consume(TokenType.Identifier, "Expected identifier after type.").value;
+      let funcPointerDepth = firstPointerDepth;
+      while (this.match(TokenType.OpenBracket)) {
+         this.consume(TokenType.CloseBracket, "Expected ']'");
+         funcPointerDepth++;
+      }
+      
       if (this.match(TokenType.OpenParen)) {
         // Function Declaration
+        const params: AST.Parameter[] = [];
+        if (!this.check(TokenType.CloseParen)) {
+          do {
+            if (this.isType(this.peek())) {
+              const pType = this.parseType();
+              let pPointerDepth = 0;
+              while (this.match(TokenType.Star)) pPointerDepth++;
+              
+              const pName = this.consume(TokenType.Identifier, "Expected parameter name.").value;
+              while (this.match(TokenType.OpenBracket)) {
+                 this.consume(TokenType.CloseBracket, "Expected ']'");
+                 pPointerDepth++;
+              }
+              
+              let defaultValue: AST.Expression | null = null;
+              if (this.match(TokenType.Equals)) {
+                defaultValue = this.expression();
+              }
+              params.push({ varType: pType, name: pName, pointerDepth: pPointerDepth, defaultValue });
+            } else {
+               throw new Error(`Expected parameter type at line ${this.peek().line}`);
+            }
+          } while (this.match(TokenType.Comma));
+        }
         this.consume(TokenType.CloseParen, "Expected ')' after parameters.");
         const body = this.blockStatement();
         return {
           type: "FunctionDeclaration",
           returnType: typeStr,
-          name: name,
-          body: body
+          name: firstName,
+          params,
+          body
         };
-      } else {
-        // Variable Declaration
+      }
+      
+      const decls: AST.Statement[] = [];
+      let currentPointerDepth = funcPointerDepth;
+      let currentName = firstName;
+      
+      while (true) {
         let initializer: AST.Expression | null = null;
         if (this.match(TokenType.Equals)) {
           initializer = this.expression();
         }
-        this.consume(TokenType.Semicolon, "Expected ';' after variable declaration.");
-        return {
+        decls.push({
           type: "VariableDeclaration",
           varType: typeStr,
-          name: name,
-          initializer: initializer
-        };
+          name: currentName,
+          initializer,
+          pointerDepth: currentPointerDepth
+        } as any);
+        
+        if (this.match(TokenType.Comma)) {
+           currentPointerDepth = 0;
+           while (this.match(TokenType.Star)) currentPointerDepth++;
+           currentName = this.consume(TokenType.Identifier, "Expected identifier after comma.").value;
+           while (this.match(TokenType.OpenBracket)) {
+              this.consume(TokenType.CloseBracket, "Expected ']'");
+              currentPointerDepth++;
+           }
+           continue;
+        }
+        break;
       }
+      
+      this.consume(TokenType.Semicolon, "Expected ';' after variable declaration.");
+      return decls;
     }
 
     return this.statement();
@@ -152,8 +252,10 @@ export class Parser {
     
     let init: AST.Statement | null = null;
     if (!this.match(TokenType.Semicolon)) {
-      if (this.isType(this.peek().type)) {
-        init = this.declaration();
+      if (this.isType(this.peek())) {
+        const decl = this.declaration();
+        if (Array.isArray(decl)) init = { type: "BlockStatement", body: decl };
+        else init = decl as AST.Statement;
       } else {
         init = this.expressionStatement();
       }
@@ -188,7 +290,9 @@ export class Parser {
     this.consume(TokenType.OpenBrace, "Expected '{' before block.");
     const statements: AST.Statement[] = [];
     while (!this.check(TokenType.CloseBrace) && !this.isAtEnd()) {
-      statements.push(this.declaration());
+      const decl = this.declaration();
+      if (Array.isArray(decl)) statements.push(...decl);
+      else statements.push(decl as AST.Statement);
     }
     this.consume(TokenType.CloseBrace, "Expected '}' after block.");
     return { type: "BlockStatement", body: statements };
@@ -196,7 +300,29 @@ export class Parser {
 
   private expressionStatement(): AST.ExpressionStatement {
     const expr = this.expression();
+    
+    // HolyC Quirk: If expr is a StringLiteral and we have commas, it's a Print call!
+    if (expr.type === "StringLiteral" && this.check(TokenType.Comma)) {
+        const args: AST.Expression[] = [expr];
+        while (this.match(TokenType.Comma)) {
+            args.push(this.expression());
+        }
+        this.consume(TokenType.Semicolon, "Expected ';' after implicit Print statement.");
+        return { type: "ExpressionStatement", expression: { type: "CallExpression", callee: "Print", arguments: args } };
+    }
+    
     this.consume(TokenType.Semicolon, "Expected ';' after expression.");
+    
+    // HolyC Quirk: Just a string literal prints it.
+    if (expr.type === "StringLiteral") {
+        return { type: "ExpressionStatement", expression: { type: "CallExpression", callee: "Print", arguments: [expr] } };
+    }
+    
+    // HolyC Quirk: Bare identifiers are function calls
+    if (expr.type === "Identifier") {
+        return { type: "ExpressionStatement", expression: { type: "CallExpression", callee: expr.name, arguments: [] } };
+    }
+    
     return { type: "ExpressionStatement", expression: expr };
   }
 
@@ -209,11 +335,33 @@ export class Parser {
   private assignment(): AST.Expression {
     const expr = this.logicalOr();
 
-    if (this.match(TokenType.Equals)) {
-      const equals = this.previous();
+    if (this.match(TokenType.PlusPlus)) {
+      if (expr.type === "Identifier" || expr.type === "UnaryExpression") {
+        return { type: "AssignmentExpression", left: expr, operator: "=", right: { type: "BinaryExpression", operator: "+", left: expr, right: { type: "NumberLiteral", value: 1, rawValue: "1" } } };
+      }
+      throw new Error("Invalid assignment target for ++");
+    }
+    if (this.match(TokenType.MinusMinus)) {
+      if (expr.type === "Identifier" || expr.type === "UnaryExpression") {
+        return { type: "AssignmentExpression", left: expr, operator: "=", right: { type: "BinaryExpression", operator: "-", left: expr, right: { type: "NumberLiteral", value: 1, rawValue: "1" } } };
+      }
+      throw new Error("Invalid assignment target for --");
+    }
+
+    if (this.match(TokenType.Equals, TokenType.PlusEquals, TokenType.MinusEquals)) {
+      const op = this.previous();
       const value = this.assignment();
       
-      if (expr.type === "Identifier" || expr.type === "UnaryExpression") { // Allow unary for pointer deref assignment
+      if (expr.type === "Identifier" || expr.type === "UnaryExpression" || expr.type === "MemberExpression") {
+        if (op.type === TokenType.PlusEquals || op.type === TokenType.MinusEquals) {
+           const binOp = op.type === TokenType.PlusEquals ? "+" : "-";
+           return {
+             type: "AssignmentExpression",
+             left: expr,
+             operator: "=",
+             right: { type: "BinaryExpression", operator: binOp, left: expr, right: value }
+           };
+        }
         return {
           type: "AssignmentExpression",
           left: expr,
@@ -221,7 +369,7 @@ export class Parser {
           right: value
         };
       }
-      throw new Error(`Invalid assignment target at line ${equals.line}`);
+      throw new Error(`Invalid assignment target at line ${op.line}`);
     }
 
     return expr;
@@ -236,16 +384,28 @@ export class Parser {
   }
 
   private logicalOr(): AST.Expression { return this.parseBinary(this.logicalAnd, TokenType.LogicalOr); }
-  private logicalAnd(): AST.Expression { return this.parseBinary(this.equality, TokenType.LogicalAnd); }
+  private logicalAnd(): AST.Expression { return this.parseBinary(this.bitwiseOr, TokenType.LogicalAnd); }
+  private bitwiseOr(): AST.Expression { return this.parseBinary(this.equality, TokenType.BitwiseOr); }
   private equality(): AST.Expression { return this.parseBinary(this.comparison, TokenType.DoubleEquals, TokenType.NotEquals); }
   private comparison(): AST.Expression { return this.parseBinary(this.term, TokenType.LessThan, TokenType.LessEqual, TokenType.GreaterThan, TokenType.GreaterEqual); }
   private term(): AST.Expression { return this.parseBinary(this.factor, TokenType.Minus, TokenType.Plus); }
-  private factor(): AST.Expression { return this.parseBinary(this.unary, TokenType.Slash, TokenType.Star); }
+  private factor(): AST.Expression { return this.parseBinary(this.unary, TokenType.Slash, TokenType.Star, TokenType.Modulo); }
 
   private unary(): AST.Expression {
-    if (this.match(TokenType.Bang, TokenType.Minus, TokenType.Star, TokenType.Ampersand)) {
+    if (this.match(TokenType.PlusPlus, TokenType.MinusMinus, TokenType.Bang, TokenType.Minus, TokenType.Star, TokenType.Ampersand)) {
       const operator = this.previous().value;
       const right = this.unary();
+      
+      if (operator === "++" || operator === "--") {
+         const binOp = operator === "++" ? "+" : "-";
+         return {
+           type: "AssignmentExpression",
+           left: right,
+           operator: "=",
+           right: { type: "BinaryExpression", operator: binOp, left: right, right: { type: "NumberLiteral", value: 1, rawValue: "1" } }
+         };
+      }
+      
       return { type: "UnaryExpression", operator, argument: right };
     }
     return this.call();
@@ -257,6 +417,14 @@ export class Parser {
     while (true) {
       if (this.match(TokenType.OpenParen)) {
         expr = this.finishCall(expr);
+      } else if (this.match(TokenType.Dot, TokenType.Arrow)) {
+        const isArrow = this.previous().type === TokenType.Arrow;
+        const property = this.consume(TokenType.Identifier, `Expected property name after '${isArrow ? "->" : "."}'.`);
+        expr = { type: "MemberExpression", object: expr, property: property.value, isArrow };
+      } else if (this.match(TokenType.OpenBracket)) {
+        const index = this.expression();
+        this.consume(TokenType.CloseBracket, "Expected ']' after index.");
+        expr = { type: "IndexExpression", object: expr, index };
       } else {
         break;
       }
@@ -287,7 +455,8 @@ export class Parser {
 
   private primary(): AST.Expression {
     if (this.match(TokenType.Number)) {
-      return { type: "NumberLiteral", value: parseFloat(this.previous().value) };
+      const raw = this.previous().value;
+      return { type: "NumberLiteral", value: Number(raw), rawValue: raw };
     }
 
     if (this.match(TokenType.String)) {
@@ -302,6 +471,28 @@ export class Parser {
       const expr = this.expression();
       this.consume(TokenType.CloseParen, "Expected ')' after expression.");
       return expr;
+    }
+
+    if (this.match(TokenType.HashExe)) {
+      this.consume(TokenType.OpenBrace, "Expected '{' after #exe");
+      let bodyText = "";
+      while (!this.check(TokenType.CloseBrace) && !this.isAtEnd()) {
+        const tok = this.advance();
+        if (tok.type === TokenType.String) bodyText += '"' + tok.value.replace(/\n/g, "\\n") + '" ';
+        else bodyText += tok.value + " ";
+      }
+      this.consume(TokenType.CloseBrace, "Expected '}' after #exe block");
+      let result: any = undefined;
+      const Yield = (val: any) => { result = val; };
+      try {
+        const ev = eval(bodyText);
+        if (typeof ev === "string" && result === undefined) console.log(ev);
+      } catch (e) { console.error("Error evaluating #exe:", e); }
+      if (result !== undefined) {
+        if (typeof result === "number") return { type: "NumberLiteral", value: result, rawValue: result.toString() };
+        if (typeof result === "string") return { type: "StringLiteral", value: result };
+      }
+      return { type: "NumberLiteral", value: 0, rawValue: "0" };
     }
 
     throw new Error(`Expected expression at line ${this.peek().line}, col ${this.peek().column}, got ${this.peek().type}`);

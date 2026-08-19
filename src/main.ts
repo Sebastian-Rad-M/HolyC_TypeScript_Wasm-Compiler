@@ -19,7 +19,7 @@ const defaultCode = `U0 Main() {
 
 const editor = monaco.editor.create(document.getElementById('editor-container')!, {
   value: defaultCode,
-  language: 'cpp', // HolyC syntax is close enough to C++ for basic highlighting
+  language: 'cpp', // okay, so let me cook. its either C, C++ or no synthax highlithing. take your pick
   theme: 'vs-dark',
   automaticLayout: true,
   minimap: { enabled: false }
@@ -30,7 +30,7 @@ const canvasEl = document.getElementById('canvas') as HTMLCanvasElement;
 const ctx = canvasEl.getContext('2d')!;
 
 function log(msg: string) {
-  outputEl.textContent += msg + "\\n";
+  outputEl.textContent += msg + '\n';
   outputEl.scrollTop = outputEl.scrollHeight;
 }
 
@@ -41,8 +41,6 @@ document.getElementById('clear-btn')!.addEventListener('click', () => {
 
 document.getElementById('run-btn')!.addEventListener('click', async () => {
   const code = editor.getValue();
-  log("\\n--- Compiling ---");
-  
   try {
     const tokens = new Lexer(code).tokenize();
     const ast = new Parser(tokens).parse();
@@ -65,12 +63,16 @@ document.getElementById('run-btn')!.addEventListener('click', async () => {
     // Link exported memory back to runtime
     runtime.memory.memory = instance.exports.memory as WebAssembly.Memory;
     
-    log("Running Main()...");
+    if (typeof (instance.exports as any)._start === "function") {
+      (instance.exports as any)._start();
+    }
+    
     if (typeof (instance.exports as any).Main === "function") {
       (instance.exports as any).Main();
-      log("Execution complete.");
+    } else if (typeof (instance.exports as any)._start !== "function") {
+      log("Error: No Main() function found and no global statements to execute.");
     } else {
-      log("Error: No Main() function found.");
+      log("Execution complete.");
     }
     
   } catch (err: any) {

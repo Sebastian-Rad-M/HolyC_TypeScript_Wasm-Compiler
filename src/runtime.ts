@@ -35,9 +35,22 @@ export class Runtime {
    * Print host function
    * Reads the string at string_ptr and outputs it to stdout
    */
-  public Print(string_ptr: bigint): void {
+  public Print(string_ptr: bigint, ...args: bigint[]): void {
     const ptr = Number(string_ptr);
-    const text = this.readString(ptr);
+    let text = this.readString(ptr);
+    
+    // Simple format string replacement for %d, %X, %c, %f, %s
+    for (const arg of args) {
+      if (text.includes("%d")) text = text.replace("%d", arg.toString());
+      else if (text.includes("%X")) text = text.replace("%X", BigInt.asUintN(64, arg).toString(16).toUpperCase());
+      else if (text.includes("%c")) text = text.replace("%c", String.fromCharCode(Number(arg)));
+      else if (text.includes("%f")) {
+         const floatVal = new Float64Array(new BigInt64Array([arg]).buffer)[0];
+         text = text.replace("%f", floatVal!.toFixed(6));
+      }
+      else if (text.includes("%s")) text = text.replace("%s", this.readString(Number(arg)));
+    }
+    
     if (this.options.stdout) {
       this.options.stdout(text);
     }
@@ -59,16 +72,17 @@ export class Runtime {
     }
   }
 
-  /**
-   * The complete import object for WebAssembly.instantiate
-   */
   public getImportObject(): WebAssembly.Imports {
     return {
       env: {
         memory: this.memory.memory,
         MAlloc: this.memory.MAlloc.bind(this.memory),
         Free: this.memory.Free.bind(this.memory),
-        Print: this.Print.bind(this),
+        Print0: (ptr: bigint) => this.Print(ptr),
+        Print1: (ptr: bigint, a: bigint) => this.Print(ptr, a),
+        Print2: (ptr: bigint, a: bigint, b: bigint) => this.Print(ptr, a, b),
+        Print3: (ptr: bigint, a: bigint, b: bigint, c: bigint) => this.Print(ptr, a, b, c),
+        Print4: (ptr: bigint, a: bigint, b: bigint, c: bigint, d: bigint) => this.Print(ptr, a, b, c, d),
         GrLine: this.GrLine.bind(this)
       }
     };

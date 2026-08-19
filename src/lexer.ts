@@ -4,7 +4,12 @@ export enum TokenType {
   U8 = "U8",
   I8 = "I8",
   I64 = "I64",
+  U64 = "U64",
   F64 = "F64",
+  I32 = "I32",
+  U32 = "U32",
+  I16 = "I16",
+  U16 = "U16",
 
   // Keywords
   Return = "return",
@@ -12,6 +17,8 @@ export enum TokenType {
   Else = "else",
   While = "while",
   For = "for",
+  Class = "class",
+  HashExe = "#exe",
 
   // Directives
   Directive = "Directive", // e.g. #exe
@@ -31,9 +38,15 @@ export enum TokenType {
   Semicolon = ";",
   Comma = ",",
   Plus = "+",
+  PlusPlus = "++",
+  PlusEquals = "+=",
   Minus = "-",
+  MinusMinus = "--",
+  MinusEquals = "-=",
+  Arrow = "->",
   Star = "*",
   Slash = "/",
+  Modulo = "%",
   Equals = "=",
   DoubleEquals = "==",
   NotEquals = "!=",
@@ -43,8 +56,10 @@ export enum TokenType {
   GreaterEqual = ">=",
   Ampersand = "&",
   LogicalAnd = "&&",
+  BitwiseOr = "|",
   LogicalOr = "||",
   Bang = "!",
+  Dot = ".",
 
   // End of file
   EOF = "EOF",
@@ -147,7 +162,7 @@ export class Lexer {
       const singleCharTokens: Record<string, TokenType> = {
         '(': TokenType.OpenParen, ')': TokenType.CloseParen, '{': TokenType.OpenBrace, '}': TokenType.CloseBrace,
         '[': TokenType.OpenBracket, ']': TokenType.CloseBracket, ';': TokenType.Semicolon, ',': TokenType.Comma,
-        '+': TokenType.Plus, '-': TokenType.Minus, '*': TokenType.Star, '/': TokenType.Slash
+        '*': TokenType.Star, '/': TokenType.Slash, '%': TokenType.Modulo
       };
 
       if (singleCharTokens[c]) {
@@ -169,19 +184,38 @@ export class Lexer {
       if (c === '<') { matchNext('=', TokenType.LessEqual, TokenType.LessThan); continue; }
       if (c === '>') { matchNext('=', TokenType.GreaterEqual, TokenType.GreaterThan); continue; }
       if (c === '&') { matchNext('&', TokenType.LogicalAnd, TokenType.Ampersand); continue; }
+      if (c === '+') { 
+        if (this.peek() === '+') { this.advance(); tokens.push({ type: TokenType.PlusPlus, value: "++", line: startLine, column: startCol }); }
+        else if (this.peek() === '=') { this.advance(); tokens.push({ type: TokenType.PlusEquals, value: "+=", line: startLine, column: startCol }); }
+        else { tokens.push({ type: TokenType.Plus, value: "+", line: startLine, column: startCol }); }
+        continue; 
+      }
+      if (c === '-') { 
+        if (this.peek() === '-') { this.advance(); tokens.push({ type: TokenType.MinusMinus, value: "--", line: startLine, column: startCol }); }
+        else if (this.peek() === '=') { this.advance(); tokens.push({ type: TokenType.MinusEquals, value: "-=", line: startLine, column: startCol }); }
+        else if (this.peek() === '>') { this.advance(); tokens.push({ type: TokenType.Arrow, value: "->", line: startLine, column: startCol }); }
+        else { tokens.push({ type: TokenType.Minus, value: "-", line: startLine, column: startCol }); }
+        continue; 
+      }
       if (c === '|') {
         if (this.peek() === '|') {
           this.advance();
           tokens.push({ type: TokenType.LogicalOr, value: "||", line: startLine, column: startCol });
-          continue;
+        } else {
+          tokens.push({ type: TokenType.BitwiseOr, value: "|", line: startLine, column: startCol });
         }
+        continue;
       }
 
       // Directives
       if (c === '#') {
         let directiveValue = c;
         while (this.isAlphaNumeric(this.peek())) directiveValue += this.advance();
-        tokens.push({ type: TokenType.Directive, value: directiveValue, line: startLine, column: startCol });
+        if (directiveValue === "#exe") {
+          tokens.push({ type: TokenType.HashExe, value: "#exe", line: startLine, column: startCol });
+        } else {
+          tokens.push({ type: TokenType.Directive, value: directiveValue, line: startLine, column: startCol });
+        }
         continue;
       }
 
@@ -219,13 +253,25 @@ export class Lexer {
         continue;
       }
 
-      // Numbers
+      // Numbers and Dot
+      if (c === '.' && !this.isDigit(this.peek())) {
+        tokens.push({ type: TokenType.Dot, value: '.', line: startLine, column: startCol });
+        continue;
+      }
+      
       if (this.isDigit(c) || (c === '.' && this.isDigit(this.peek()))) {
         let numValue = c;
-        let hasDot = c === '.';
-        while (this.isDigit(this.peek()) || (!hasDot && this.peek() === '.')) {
-          if (this.peek() === '.') hasDot = true;
-          numValue += this.advance();
+        if (c === '0' && (this.peek() === 'x' || this.peek() === 'X')) {
+          numValue += this.advance(); // consume x
+          while (this.isDigit(this.peek()) || (this.peek().toLowerCase() >= 'a' && this.peek().toLowerCase() <= 'f')) {
+            numValue += this.advance();
+          }
+        } else {
+          let hasDot = c === '.';
+          while (this.isDigit(this.peek()) || (!hasDot && this.peek() === '.')) {
+            if (this.peek() === '.') hasDot = true;
+            numValue += this.advance();
+          }
         }
         tokens.push({ type: TokenType.Number, value: numValue, line: startLine, column: startCol });
         continue;
@@ -237,8 +283,10 @@ export class Lexer {
         while (this.isAlphaNumeric(this.peek())) idValue += this.advance();
 
         const keywords: Record<string, TokenType> = {
-          U0: TokenType.U0, U8: TokenType.U8, I8: TokenType.I8, I64: TokenType.I64, F64: TokenType.F64,
-          return: TokenType.Return, if: TokenType.If, else: TokenType.Else, while: TokenType.While, for: TokenType.For
+          U0: TokenType.U0, U8: TokenType.U8, I8: TokenType.I8, 
+          I64: TokenType.I64, U64: TokenType.U64, F64: TokenType.F64,
+          I32: TokenType.I32, U32: TokenType.U32, I16: TokenType.I16, U16: TokenType.U16,
+          return: TokenType.Return, if: TokenType.If, else: TokenType.Else, while: TokenType.While, for: TokenType.For, class: TokenType.Class
         };
 
         tokens.push({ type: keywords[idValue] || TokenType.Identifier, value: idValue, line: startLine, column: startCol });

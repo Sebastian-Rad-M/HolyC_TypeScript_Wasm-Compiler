@@ -5,7 +5,12 @@ export function getByteSize(type: Type): number {
     case "U0": return 0;
     case "I8":
     case "U8": return 1;
+    case "I16":
+    case "U16": return 2;
+    case "I32":
+    case "U32": return 4;
     case "I64":
+    case "U64":
     case "F64": return 8;
     default:
       throw new Error(`Unknown byte size for type: ${type}`);

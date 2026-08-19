@@ -9,34 +9,38 @@ const code = `
 // This is a test HolyC file
 #exe { Cd(__DIR__);; }
 
-I64 Main() {
-  I64 x = 1 + 2 * 3;
-  if (x == 7) {
-    Print("Hello World\\n");
-    I64 y = 'A';
-  }
-  return x;
+U0 Test2_ControlFlow() {
+    "--- Test 2: Control Flow ---\\n";
+    I64 i, count = 0;
+    
+    for (i = 0; i < 10; i++) {
+        if (i % 2 == 0) {
+            count++;
+        }
+    }
+    
+    if (count == 5) {
+        "PASS: For-loops and If-statements working.\\n";
+    } else {
+        "FAIL: Control flow generated incorrect branching.\\n";
+    }
 }
+
+Test2_ControlFlow();
 `;
 
 const lexer = new Lexer(code);
 try {
   const tokens = lexer.tokenize();
-  // console.log("Tokens:");
-  // tokens.forEach(t => console.log(`  [${t.type}] ${t.value} (Line ${t.line}, Col ${t.column})`));
-  
   const parser = new Parser(tokens);
   const ast = parser.parse();
-  // console.log("AST:");
-  // console.dir(ast, { depth: null });
-
-  // Phase 3: Memory Model & Allocator Test
+  
   console.log("\\n--- Phase 3: Memory Model Test ---");
   const memory = new MemoryModel();
   
   const ptr1 = memory.MAlloc(8);
   const ptr2 = memory.MAlloc(4);
-  const ptr3 = memory.MAlloc(8); // Should align to 8-byte boundary
+  const ptr3 = memory.MAlloc(8); 
 
   console.log(`Allocated 8 bytes at: 0x${ptr1.toString(16)}`);
   console.log(`Allocated 4 bytes at: 0x${ptr2.toString(16)}`);
@@ -64,12 +68,17 @@ try {
 
   console.log("Successfully instantiated Wasm module!");
   
+  if (typeof (wasmInstance.exports as any)._start === "function") {
+    console.log("Executing global statements...");
+    (wasmInstance.exports as any)._start();
+  }
+  
   if (typeof (wasmInstance.exports as any).Main === "function") {
     console.log("Executing Main()...");
     const result = (wasmInstance.exports as any).Main();
     console.log(`Main() returned:`, result);
-  } else {
-    console.log("No Main() function exported.");
+  } else if (typeof (wasmInstance.exports as any)._start !== "function") {
+    console.log("No Main() function exported and no global statements to execute.");
   }
 
 } catch (e) {
