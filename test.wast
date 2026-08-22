@@ -18,199 +18,26 @@
  (import "env" "Sleep" (func $Sleep (param i64)))
  (import "env" "Spawn" (func $Spawn (param i64 i64 i64) (result i64)))
  (global $heap_ptr (mut i32) (i32.const 131072))
- (global $spawn_counter (mut i64) (i64.const 0))
  (global $__vararg_ptr (mut i32) (i32.const 196608))
  (global $__asyncify_state (mut i32) (i32.const 0))
  (global $__asyncify_data (mut i32) (i32.const 0))
  (memory $0 10 256)
- (data $0 (i32.const 65536) "--- Test 13: Task Management & Yield ---\n\00")
- (data $1 (i32.const 65578) "TestTask\00")
- (data $2 (i32.const 65587) "PASS: Task spawned and cooperative Yield maintained context.\n\00")
- (data $3 (i32.const 65649) "FAIL: Task scheduler failed or context corruption occurred.\n\00")
- (table $0 2 2 funcref)
- (elem $0 (i32.const 0) $__null_func $SpawnedTest)
+ (data $0 (i32.const 65536) "--- Test 9: Switch Statements & Ranges ---\n\00")
+ (data $1 (i32.const 65580) "PASS: Switch statements and range parsing working.\n\00")
+ (data $2 (i32.const 65632) "FAIL: Switch statement branching or bounds checking broken.\n\00")
  (export "memory" (memory $0))
- (export "SpawnedTest" (func $SpawnedTest))
- (export "Test13_Tasks" (func $Test13_Tasks))
+ (export "Test9_SwitchRanges" (func $Test9_SwitchRanges))
  (export "_start" (func $_start))
- (export "table" (table $0))
  (export "asyncify_start_unwind" (func $asyncify_start_unwind))
  (export "asyncify_stop_unwind" (func $asyncify_stop_unwind))
  (export "asyncify_start_rewind" (func $asyncify_start_rewind))
  (export "asyncify_stop_rewind" (func $asyncify_stop_rewind))
  (export "asyncify_get_state" (func $asyncify_get_state))
- (func $SpawnedTest (param $0 i64)
-  (local $1 i64)
-  (local $2 i32)
-  (local $3 i32)
-  (if
-   (i32.eq
-    (global.get $__asyncify_state)
-    (i32.const 2)
-   )
-   (then
-    (i32.store
-     (global.get $__asyncify_data)
-     (i32.sub
-      (i32.load
-       (global.get $__asyncify_data)
-      )
-      (i32.const 16)
-     )
-    )
-    (local.set $0
-     (i64.load align=4
-      (local.tee $2
-       (i32.load
-        (global.get $__asyncify_data)
-       )
-      )
-     )
-    )
-    (local.set $1
-     (i64.load offset=8 align=4
-      (local.get $2)
-     )
-    )
-   )
-  )
-  (local.set $2
-   (block $__asyncify_unwind (result i32)
-    (if
-     (i32.eq
-      (global.get $__asyncify_state)
-      (i32.const 2)
-     )
-     (then
-      (i32.store
-       (global.get $__asyncify_data)
-       (i32.sub
-        (i32.load
-         (global.get $__asyncify_data)
-        )
-        (i32.const 4)
-       )
-      )
-      (local.set $3
-       (i32.load
-        (i32.load
-         (global.get $__asyncify_data)
-        )
-       )
-      )
-     )
-    )
-    (local.set $1
-     (select
-      (local.get $1)
-      (i64.const 0)
-      (global.get $__asyncify_state)
-     )
-    )
-    (loop $loop_8773
-     (block $block_9681
-      (if
-       (i32.eqz
-        (global.get $__asyncify_state)
-       )
-       (then
-        (br_if $block_9681
-         (i64.ge_s
-          (local.get $1)
-          (i64.const 5)
-         )
-        )
-        (global.set $spawn_counter
-         (i64.add
-          (global.get $spawn_counter)
-          (local.get $0)
-         )
-        )
-       )
-      )
-      (if
-       (i32.or
-        (i32.eqz
-         (global.get $__asyncify_state)
-        )
-        (i32.eqz
-         (local.get $3)
-        )
-       )
-       (then
-        (call $Yield)
-        (drop
-         (br_if $__asyncify_unwind
-          (i32.const 0)
-          (i32.eq
-           (global.get $__asyncify_state)
-           (i32.const 1)
-          )
-         )
-        )
-       )
-      )
-      (if
-       (i32.eqz
-        (global.get $__asyncify_state)
-       )
-       (then
-        (local.set $1
-         (i64.add
-          (local.get $1)
-          (i64.const 1)
-         )
-        )
-        (br $loop_8773)
-       )
-      )
-     )
-    )
-    (return)
-   )
-  )
-  (i32.store
-   (i32.load
-    (global.get $__asyncify_data)
-   )
-   (local.get $2)
-  )
-  (i32.store
-   (global.get $__asyncify_data)
-   (i32.add
-    (i32.load
-     (global.get $__asyncify_data)
-    )
-    (i32.const 4)
-   )
-  )
-  (i64.store align=4
-   (local.tee $2
-    (i32.load
-     (global.get $__asyncify_data)
-    )
-   )
-   (local.get $0)
-  )
-  (i64.store offset=8 align=4
-   (local.get $2)
-   (local.get $1)
-  )
-  (i32.store
-   (global.get $__asyncify_data)
-   (i32.add
-    (i32.load
-     (global.get $__asyncify_data)
-    )
-    (i32.const 16)
-   )
-  )
- )
- (func $Test13_Tasks
+ (func $Test9_SwitchRanges
   (local $0 i32)
   (local $1 i32)
-  (local $2 i64)
-  (local $3 i32)
+  (local $2 i32)
+  (local $3 i64)
   (if
    (i32.eq
     (global.get $__asyncify_state)
@@ -223,31 +50,26 @@
       (i32.load
        (global.get $__asyncify_data)
       )
-      (i32.const 16)
+      (i32.const 8)
      )
     )
     (local.set $2
-     (i64.load align=4
-      (local.tee $1
+     (i32.load
+      (local.tee $0
        (i32.load
         (global.get $__asyncify_data)
        )
       )
      )
     )
-    (local.set $3
-     (i32.load offset=8
-      (local.get $1)
-     )
-    )
-    (local.set $1
-     (i32.load offset=12
-      (local.get $1)
+    (local.set $0
+     (i32.load offset=4
+      (local.get $0)
      )
     )
    )
   )
-  (local.set $0
+  (local.set $1
    (block $__asyncify_unwind (result i32)
     (if
      (i32.eq
@@ -264,7 +86,7 @@
         (i32.const 4)
        )
       )
-      (local.set $0
+      (local.set $1
        (i32.load
         (i32.load
          (global.get $__asyncify_data)
@@ -279,7 +101,7 @@
        (global.get $__asyncify_state)
       )
       (i32.eqz
-       (local.get $0)
+       (local.get $1)
       )
      )
      (then
@@ -302,213 +124,100 @@
       (global.get $__asyncify_state)
      )
      (then
-      (global.set $spawn_counter
-       (i64.const 0)
+      (local.set $3
+       (i64.const 7)
+      )
+      (block $switch_vhyurn
+       (block $case_usk01h
+        (block $case_jvdth
+         (block
+          (br_if $case_jvdth
+           (i64.ge_u
+            (local.get $3)
+            (i64.const 6)
+           )
+          )
+          (br $case_usk01h)
+         )
+        )
+        (br $switch_vhyurn)
+       )
+      )
+      (local.set $2
+       (i32.const 1)
       )
      )
     )
     (if
      (i32.or
-      (i32.eqz
-       (global.get $__asyncify_state)
+      (local.tee $0
+       (select
+        (local.get $0)
+        (local.get $2)
+        (global.get $__asyncify_state)
+       )
       )
       (i32.eq
-       (local.get $0)
-       (i32.const 1)
+       (global.get $__asyncify_state)
+       (i32.const 2)
       )
      )
      (then
-      (drop
-       (call $Spawn
-        (i64.const 1)
-        (i64.const 10)
-        (i64.const 65578)
-       )
-      )
-      (drop
-       (br_if $__asyncify_unwind
-        (i32.const 1)
-        (i32.eq
-         (global.get $__asyncify_state)
-         (i32.const 1)
-        )
-       )
-      )
-     )
-    )
-    (local.set $2
-     (select
-      (local.get $2)
-      (i64.const 0)
-      (global.get $__asyncify_state)
-     )
-    )
-    (loop $loop_2139
-     (block $block_4826
-      (if
-       (i32.eqz
-        (global.get $__asyncify_state)
-       )
-       (then
-        (br_if $block_4826
-         (local.tee $3
-          (i64.ge_s
-           (local.get $2)
-           (i64.const 5)
-          )
-         )
-        )
-        (global.set $spawn_counter
-         (i64.add
-          (global.get $spawn_counter)
-          (i64.const 1)
-         )
-        )
-       )
-      )
       (if
        (i32.or
         (i32.eqz
          (global.get $__asyncify_state)
         )
         (i32.eq
-         (local.get $0)
+         (local.get $1)
+         (i32.const 1)
+        )
+       )
+       (then
+        (call $Print0
+         (i64.const 65580)
+        )
+        (drop
+         (br_if $__asyncify_unwind
+          (i32.const 1)
+          (i32.eq
+           (global.get $__asyncify_state)
+           (i32.const 1)
+          )
+         )
+        )
+       )
+      )
+     )
+    )
+    (if
+     (i32.or
+      (i32.eqz
+       (local.get $0)
+      )
+      (i32.eq
+       (global.get $__asyncify_state)
+       (i32.const 2)
+      )
+     )
+     (then
+      (if
+       (i32.or
+        (i32.eqz
+         (global.get $__asyncify_state)
+        )
+        (i32.eq
+         (local.get $1)
          (i32.const 2)
         )
        )
        (then
-        (call $Yield)
+        (call $Print0
+         (i64.const 65632)
+        )
         (drop
          (br_if $__asyncify_unwind
           (i32.const 2)
-          (i32.eq
-           (global.get $__asyncify_state)
-           (i32.const 1)
-          )
-         )
-        )
-       )
-      )
-      (if
-       (i32.eqz
-        (global.get $__asyncify_state)
-       )
-       (then
-        (local.set $2
-         (i64.add
-          (local.get $2)
-          (i64.const 1)
-         )
-        )
-        (br $loop_2139)
-       )
-      )
-     )
-    )
-    (if
-     (i32.or
-      (i32.eqz
-       (global.get $__asyncify_state)
-      )
-      (i32.eq
-       (local.get $0)
-       (i32.const 3)
-      )
-     )
-     (then
-      (call $Sleep
-       (i64.const 50)
-      )
-      (drop
-       (br_if $__asyncify_unwind
-        (i32.const 3)
-        (i32.eq
-         (global.get $__asyncify_state)
-         (i32.const 1)
-        )
-       )
-      )
-     )
-    )
-    (if
-     (i32.or
-      (local.tee $1
-       (select
-        (local.get $1)
-        (local.tee $3
-         (select
-          (local.get $3)
-          (i64.eq
-           (global.get $spawn_counter)
-           (i64.const 55)
-          )
-          (global.get $__asyncify_state)
-         )
-        )
-        (global.get $__asyncify_state)
-       )
-      )
-      (i32.eq
-       (global.get $__asyncify_state)
-       (i32.const 2)
-      )
-     )
-     (then
-      (if
-       (i32.or
-        (i32.eqz
-         (global.get $__asyncify_state)
-        )
-        (i32.eq
-         (local.get $0)
-         (i32.const 4)
-        )
-       )
-       (then
-        (call $Print0
-         (i64.const 65587)
-        )
-        (drop
-         (br_if $__asyncify_unwind
-          (i32.const 4)
-          (i32.eq
-           (global.get $__asyncify_state)
-           (i32.const 1)
-          )
-         )
-        )
-       )
-      )
-     )
-    )
-    (if
-     (i32.or
-      (i32.eqz
-       (local.get $1)
-      )
-      (i32.eq
-       (global.get $__asyncify_state)
-       (i32.const 2)
-      )
-     )
-     (then
-      (if
-       (i32.or
-        (i32.eqz
-         (global.get $__asyncify_state)
-        )
-        (i32.eq
-         (local.get $0)
-         (i32.const 5)
-        )
-       )
-       (then
-        (call $Print0
-         (i64.const 65649)
-        )
-        (drop
-         (br_if $__asyncify_unwind
-          (i32.const 5)
           (i32.eq
            (global.get $__asyncify_state)
            (i32.const 1)
@@ -526,7 +235,7 @@
    (i32.load
     (global.get $__asyncify_data)
    )
-   (local.get $0)
+   (local.get $1)
   )
   (i32.store
    (global.get $__asyncify_data)
@@ -537,21 +246,17 @@
     (i32.const 4)
    )
   )
-  (i64.store align=4
-   (local.tee $0
+  (i32.store
+   (local.tee $1
     (i32.load
      (global.get $__asyncify_data)
     )
    )
    (local.get $2)
   )
-  (i32.store offset=8
-   (local.get $0)
-   (local.get $3)
-  )
-  (i32.store offset=12
-   (local.get $0)
+  (i32.store offset=4
    (local.get $1)
+   (local.get $0)
   )
   (i32.store
    (global.get $__asyncify_data)
@@ -559,7 +264,7 @@
     (i32.load
      (global.get $__asyncify_data)
     )
-    (i32.const 16)
+    (i32.const 8)
    )
   )
  )
@@ -601,7 +306,7 @@
       )
      )
      (then
-      (call $Test13_Tasks)
+      (call $Test9_SwitchRanges)
       (drop
        (br_if $__asyncify_unwind
         (i32.const 0)
@@ -631,9 +336,6 @@
     (i32.const 4)
    )
   )
- )
- (func $__null_func
-  (unreachable)
  )
  (func $asyncify_start_unwind (param $0 i32)
   (global.set $__asyncify_state

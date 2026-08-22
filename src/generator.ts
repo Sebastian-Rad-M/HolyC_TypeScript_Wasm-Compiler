@@ -286,10 +286,10 @@ export class Generator {
           
           if (stmt.initializer) {
               if (stmt.initializer.type === "ArrayLiteral") {
-                  const ptr32 = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
                   const stores = stmt.initializer.elements.map((el, i) => {
+                      const freshPtr = this.module.i32.wrap(this.module.local.get(index, binaryen.i64));
                       const val = this.generateExpression(el);
-                      return this.module.i64.store(0, 8, this.module.i32.add(ptr32, this.module.i32.const(i * 8)), val);
+                      return this.module.i64.store(0, 8, this.module.i32.add(freshPtr, this.module.i32.const(i * 8)), val);
                   });
                   return this.module.block(null, [initExpr ? initExpr : this.module.nop(), ...stores]);
               }
@@ -323,6 +323,15 @@ export class Generator {
         const oldTarget = this.currentBreakTarget;
         this.currentBreakTarget = switchBlockName;
         
+        // Allocate a local variable to store the evaluated discriminant
+        const discLocalIndex = this.currentLocalBaseIndex + this.currentLocalTypes.length;
+        this.currentLocalTypes.push(binaryen.i64);
+        
+        const discInit = this.module.local.set(
+            discLocalIndex, 
+            this.generateExpression(stmt.discriminant, binaryen.i64)
+        );
+        
         let defaultIndex = -1;
         const caseBlocks: string[] = [];
         for (let i = 0; i < stmt.cases.length; i++) {
@@ -334,17 +343,16 @@ export class Generator {
         for (let i = 0; i < stmt.cases.length; i++) {
             const c = stmt.cases[i]!;
             if (c.test !== null) {
-                const disc = this.generateExpression(stmt.discriminant);
                 const testVal = this.generateExpression(c.test);
                 let cond: binaryen.ExpressionRef;
                 if (c.rangeEnd) {
                     const endVal = this.generateExpression(c.rangeEnd);
                     cond = this.module.i32.and(
-                        this.module.i64.ge_s(disc, testVal),
-                        this.module.i64.le_s(disc, endVal)
+                        this.module.i64.ge_s(this.module.local.get(discLocalIndex, binaryen.i64), testVal),
+                        this.module.i64.le_s(this.module.local.get(discLocalIndex, binaryen.i64), endVal)
                     );
                 } else {
-                    cond = this.module.i64.eq(disc, testVal);
+                    cond = this.module.i64.eq(this.module.local.get(discLocalIndex, binaryen.i64), testVal);
                 }
                 routeStmts.push(this.module.br(caseBlocks[i]!, cond));
             }
@@ -367,7 +375,7 @@ export class Generator {
         }
         
         this.currentBreakTarget = oldTarget;
-        return currentBlockExpr;
+        return this.module.block(null, [discInit, currentBlockExpr]);
       }
       case "TryStatement": {
         const tryName = `try_${Math.random().toString(36).substring(7)}`;
